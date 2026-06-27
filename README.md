@@ -13,6 +13,8 @@ re-install almost any Mac from one drive.
 > Those diagnostic features have been removed; it is now focused on building
 > macOS install drives.
 
+<a href="https://www.buymeacoffee.com/themacgenie"><img width="214" height="60" src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee"></a>
+---
 ## Features
 
 - **One-pass drive builds** — erase a target disk and deploy a whole set of
