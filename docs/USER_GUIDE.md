@@ -1,6 +1,6 @@
 # makedrive User Guide
 
-**Version:** Build 200  
+**Version:** Build 201  
 **Updated:** 2026-06-27  
 **Author:** Ian Williams  
 **Contact:** [ian@themacgenie.com](ian@themacgenie.com)  
@@ -44,7 +44,7 @@ tedious and error-prone; makedrive makes it consistent and repeatable, and lets
 you re-purpose a drive quickly when a new macOS version ships.
 
 > **Note for users of older makedrive releases:** makedrive was historically a
-> diagnostic/triage tool tied to Apple-internal service workflows. Those
+> diagnostic/triage tool tied to service provider workflows. Those
 > diagnostic features have been removed. The current tool is focused on building
 > macOS install drives.
 
@@ -339,6 +339,15 @@ any file on disk.
 ---
 
 ## Changelog
+
+### Build 201 — 2026-06-27
+
+- Dropped the daily build-sequence number from the version string; releases are
+  now identified by date and build number alone.
+- Cleaned up the script so it passes **ShellCheck** with no warnings: added `-r`
+  to all `read` prompts, replaced indirect `$?` exit-status checks with direct
+  command tests, and quoted variable expansions where word-splitting was
+  unintended. No change to behavior.
 
 ### Build 200 — 2026-06-27 (first public release)
 

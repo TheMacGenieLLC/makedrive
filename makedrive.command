@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# shellcheck disable=SC2154  # config vars (catalogURLs, imageFilePaths, etc.) are set in makedrive.conf, sourced at runtime
+
 # makedrive.command
 #
 # Created by:
@@ -9,14 +11,13 @@
 # https://github.com/TheMacGenie/makedrive
 #
 # Current script version:
-currentVersion="2026-06-27 - 01 - Build 200"
+currentVersion="2026-06-27 - Build 201"
 
 # Global Variable Declarations
 bootDiskID=""
 diskNum=""
 diskType=""
 doDrive=""
-dummy=""
 executionPath=""
 imagePathToAdd=""
 imageToAdd=""
@@ -139,7 +140,7 @@ add_copy_single_dmg () {
 		echo "The disk image could not be mounted. Verify the file and try again."
 		echo ""
 		echo "Hit enter to continue."
-		read dummy
+		read -r _
 		imagePathToAdd=""
 		return 1
 	fi
@@ -185,9 +186,7 @@ add_copy_single_dmg () {
 	
 		fi
 
-		rsync -Wh --progress "$imagePathToAdd" "$2"
-		
-		if [ "$?" = "0" ]; then
+		if rsync -Wh --progress "$imagePathToAdd" "$2"; then
 
 			# Determine icon source. Use $6 (external app path) when provided.
 			# Otherwise probe the DMG read-only for an embedded Install*.app
@@ -213,8 +212,7 @@ add_copy_single_dmg () {
 				local iconRwDmg="/var/tmp/makedrive-icon-rw.dmg"
 				local iconMount=""
 				echo "Converting image for icon application..."
-				hdiutil convert "$2" -format UDRW -o "$iconRwDmg"
-				if [ "$?" = "0" ]; then
+				if hdiutil convert "$2" -format UDRW -o "$iconRwDmg"; then
 					iconMount=$(hdiutil attach "$iconRwDmg" -nobrowse -noverify 2>/dev/null \
 					    | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
 					if [ -n "$iconMount" ]; then
@@ -261,7 +259,7 @@ add_copy_single_dmg () {
 	
 	echo ""
 	echo "Hit enter to continue... "
-	read dummy
+	read -r _
 	
 	imagePathToAdd=""
 
@@ -393,14 +391,13 @@ add_mas_createinstallmedia () {
 		local newImageVolName="${4} temp"
 		local endName="${1##*/}"; endName="${endName%.app}"
 
-		add_create_install_dmg "$makedriveInstTmpImageFile" "$3" "$newImageVolName"
-		if [ "$?" != "0" ]; then
+		if ! add_create_install_dmg "$makedriveInstTmpImageFile" "$3" "$newImageVolName"; then
 			echo ""
 			echo "Could not create the temporary installer DMG. Check available disk space."
 			rm -f "$makedriveInstTmpImageFile"
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -408,9 +405,7 @@ add_mas_createinstallmedia () {
 		echo "Creating $6 bootable DMG..."
 		echo ""
 
-		"$1/Contents/Resources/createinstallmedia" --volume "/Volumes/$newImageVolName" --nointeraction --downloadassets
-
-		if [ "$?" != "0" ]; then
+		if ! "$1/Contents/Resources/createinstallmedia" --volume "/Volumes/$newImageVolName" --nointeraction --downloadassets; then
 			echo ""
 			echo "createinstallmedia failed. Check the installer and available disk space,"
 			echo "then try again."
@@ -420,7 +415,7 @@ add_mas_createinstallmedia () {
 			rm -f "$makedriveInstTmpImageFile"
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -450,7 +445,7 @@ add_mas_createinstallmedia () {
 			hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -470,7 +465,7 @@ add_mas_createinstallmedia () {
 
 	fi
 
-	read dummy
+	read -r _
 
 }
 
@@ -507,14 +502,13 @@ add_mas_createinstallmedia_yos () {
 		local newImageVolName="${4} temp"
 		local endName="${1##*/}"; endName="${endName%.app}"
 
-		add_create_install_dmg "$makedriveInstTmpImageFile" "$3" "$newImageVolName"
-		if [ "$?" != "0" ]; then
+		if ! add_create_install_dmg "$makedriveInstTmpImageFile" "$3" "$newImageVolName"; then
 			echo ""
 			echo "Could not create the temporary installer DMG. Check available disk space."
 			rm -f "$makedriveInstTmpImageFile"
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -550,7 +544,7 @@ add_mas_createinstallmedia_yos () {
 			rm -f "$makedriveInstTmpImageFile"
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -573,7 +567,7 @@ add_mas_createinstallmedia_yos () {
 			echo "Could not move the completed DMG to restorekit. Check permissions and disk space."
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			return 1
 		fi
 
@@ -590,7 +584,7 @@ add_mas_createinstallmedia_yos () {
 
 	fi
 
-	read dummy
+	read -r _
 
 }
 
@@ -653,7 +647,7 @@ add_menu_main () {
 		echo "Enter the number or letter for the software you'd like to add into the"
 		echo "restorekit folder and hit return: "
 		echo ""
-		read imageToAdd
+		read -r imageToAdd
 
 		case "$imageToAdd" in
 
@@ -731,6 +725,7 @@ add_menu_main () {
 # ------------------------------------------------------------------------------
 conf_version_newer () {
 	local IFS=.
+	# shellcheck disable=SC2206  # intentional split of dotted version on IFS=.
 	local va=($1) vb=($2)
 	local i
 	for (( i = 0; i < ${#va[@]} || i < ${#vb[@]}; i++ )); do
@@ -805,6 +800,7 @@ download_sync_conf () {
 		# the conf. The change count is printed to stdout and captured.
 		local tmpConf
 		tmpConf=$(mktemp "${confPath}.XXXXXX")
+		# shellcheck disable=SC2016  # $ refs are awk variables, not shell
 		local awkProg='
 function lsub(str, from, to,    i) {
     i = index(str, from)
@@ -848,6 +844,7 @@ END { print n+0 }
 	done
 
 	if [ "$anyUpdate" = "1" ]; then
+		# shellcheck source=/dev/null
 		source "$confPath"
 		[ "$quiet" != "1" ] && echo ""
 	fi
@@ -972,6 +969,7 @@ MAKEDRIVE_SYNC_PYEOF
 		return 0
 	fi
 
+	# shellcheck source=/dev/null
 	. "$syncVarsFile"
 	rm -f "$syncVarsFile"
 	macOSdlCount=$MACOS_DL_COUNT
@@ -1101,7 +1099,7 @@ build_choose_target_device () {
 			echo "That disk number doesn't exist according to the OS. Choose another disk"
 			echo "to restore onto. Press enter to continue."
 			echo ""
-			read dummy
+			read -r _
 			diskNum=""
 
 		# If the disk to image is a boot disk (bootDiskID may list more than one
@@ -1114,7 +1112,7 @@ build_choose_target_device () {
 			echo "would be an extremely bad idea.  Choose another disk to erase."
 			echo "Hit return to continue"
 			echo ""
-			read dummy
+			read -r _
 			diskNum=""
 			
         # Asks if you are OK with erasing the drive that you just chose. If you
@@ -1197,15 +1195,14 @@ build_deploy_volume () {
 				echo ""
 
 				# macOS 15.4 switched to openrsync; --inplace caused unexpected EOF errors.
-				rsync -rhWE --progress --exclude "*DS_Store" --exclude ".*" "$executionPath/restorekit/" "/Volumes/$dataDriveStartName"
-				if [ "$?" != "0" ]; then
+				if ! rsync -rhWE --progress --exclude "*DS_Store" --exclude ".*" "$executionPath/restorekit/" "/Volumes/$dataDriveStartName"; then
 					lastBuildError="rsync to DataDrive failed."
 					deployError=1
 					echo ""
 					echo "rsync to the data partition failed. The data partition may be incomplete."
 					echo ""
 					echo "Hit enter to continue."
-					read dummy
+					read -r _
 				fi
 
 			else
@@ -1213,7 +1210,8 @@ build_deploy_volume () {
 			fi
 
 			diskutil rename "/Volumes/$dataDriveStartName" "$dataDriveFinalName"
-			if [ "$?" != "0" ] && [ "$deployError" = "0" ]; then
+			renameResult=$?
+			if [ "$renameResult" != "0" ] && [ "$deployError" = "0" ]; then
 				lastBuildError="Could not rename the DataDrive partition."
 				deployError=1
 			fi
@@ -1242,7 +1240,7 @@ build_deploy_volume () {
 		# To fix Catalina's weird asr unmounting behavior, try to have it mount everything
 		# on the target disk device every time. Hopefully it stops the deployment failures
 		# until they fix it for APFS restores. Feedback report FB6952557
-		diskutil mountDisk disk$diskNum
+		diskutil mountDisk disk"$diskNum"
 		sleep 2
 		
 		
@@ -1253,15 +1251,14 @@ build_deploy_volume () {
 		# Get the desired data onto the target volume by restoring the source DMG.
 		echo "Restoring disk image to target volume."
 		echo ""
-		asr restore --source "${deployInfoArray[3]}" --target "/Volumes/${deployInfoArray[4]}/" --erase --noprompt --noverify
-		if [ "$?" != "0" ]; then
+		if ! asr restore --source "${deployInfoArray[3]}" --target "/Volumes/${deployInfoArray[4]}/" --erase --noprompt --noverify; then
 			lastBuildError="asr restore failed for ${deployInfoArray[2]}."
 			deployError=1
 			echo ""
 			echo "asr restore failed for ${deployInfoArray[2]}. The drive may be incomplete."
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			break
 		fi
 		echo ""
@@ -1269,14 +1266,15 @@ build_deploy_volume () {
 		# Close the Finder window opened by INST-A DMGs
 		if [ "${deployInfoArray[1]}" == "INST-A" ]; then
 
-			sleep $windowCloseSleepInSeconds
+			sleep "$windowCloseSleepInSeconds"
 			osascript -e "tell application \"Finder\" to close Finder window \"${deployInfoArray[5]}\""
 
 		fi
 
 		# Rename each volume appropriately
 		diskutil rename "/Volumes/${deployInfoArray[5]}" "${deployInfoArray[6]}"
-		if [ "$?" != "0" ] && [ "$deployError" = "0" ]; then
+		renameResult=$?
+		if [ "$renameResult" != "0" ] && [ "$deployError" = "0" ]; then
 			lastBuildError="Could not rename ${deployInfoArray[5]} to ${deployInfoArray[6]}."
 			deployError=1
 			echo "Warning: volume rename failed for ${deployInfoArray[5]}. Drive may not be fully set up."
@@ -1308,7 +1306,7 @@ build_deploy_volume () {
 		# Disable Spotlight on target volume
 		echo "Disabling Spotlight on target volume."
 		touch "/Volumes/${deployInfoArray[6]}/.metadata_never_index"
-		sleep $spotlightSleepInSeconds
+		sleep "$spotlightSleepInSeconds"
 		mdutil -i off "/Volumes/${deployInfoArray[6]}"
 	
 		# Unmount the target volume.
@@ -1358,7 +1356,7 @@ build_drives_start () {
 		build_run_build_task
 		local buildTaskResult=$?
 
-		diskutil eject disk$diskNum
+		diskutil eject disk"$diskNum"
 
 		if [ "$buildTaskResult" = "0" ]; then
 			notify_pushover_send "Your installation drive has finished imaging."
@@ -1417,6 +1415,7 @@ build_format_target_disk () {
 	# eval is required to expand the $varName references embedded in partitionString.
 	# The values come exclusively from makedrive.conf, which is controlled by the
 	# admin who runs the script; this is the intended trust boundary.
+	# shellcheck disable=SC2086  # word-splitting of $partitionString into args is intentional
 	eval diskutil partitionDisk disk$1 $numOfVolumes $2 $partitionString
 	local partitionResult=$?
 
@@ -1450,7 +1449,7 @@ build_menu_chooser () {
 		echo ""
 		echo "  X. Return to the main menu"
 		echo ""
-		read diskType
+		read -r diskType
 
 		case "$diskType" in
 		[Xx] )
@@ -1493,17 +1492,17 @@ build_run_build_task () {
 
 	local volumesRef="buildType${diskType}_volumes[@]"
 	local schemeVar="buildType${diskType}_scheme"
+	# shellcheck disable=SC2034  # passed by name to build_* and dereferenced there
 	local configVolumeList=( "${!volumesRef}" )
 	local diskScheme="${!schemeVar}"
 
-	build_format_target_disk "$diskNum" "$diskScheme" configVolumeList[@]
-	if [ "$?" != "0" ]; then
+	if ! build_format_target_disk "$diskNum" "$diskScheme" configVolumeList[@]; then
 		lastBuildError="Disk partitioning failed."
 		echo ""
 		echo "Disk partitioning failed. The drive was not modified."
 		echo ""
 		echo "Hit enter to continue."
-		read dummy
+		read -r _
 		return 1
 	fi
 	build_deploy_volume configVolumeList[@]
@@ -1541,7 +1540,7 @@ check_file_presence () {
 		echo ""
 		echo "The following files are not present in restorekit:"
 		echo ""
-		echo -e $missingDMGs | rs -zet -g8
+		echo -e "$missingDMGs" | rs -zet -g8
 		echo ""
 		echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 		echo ""
@@ -1565,9 +1564,7 @@ dmgtool_compress_dmg () {
 
 	disp_print_header
 	
-	hdiutil imageinfo "$1" | grep "$dmgCompressionString"
-	
-	if [ "$?" != "0" ]; then
+	if ! hdiutil imageinfo "$1" | grep "$dmgCompressionString"; then
 		
 		compressingNow="${1##*/}"
 		echo "Compressing $compressingNow"
@@ -1579,9 +1576,7 @@ dmgtool_compress_dmg () {
 			echo ""
 		fi
 
-		hdiutil convert "$1" -format "$dmgCompressionType" -o "$1.new.dmg"
-		
-		if [ "$?" != "0" ]; then
+		if ! hdiutil convert "$1" -format "$dmgCompressionType" -o "$1.new.dmg"; then
 		
 			return 1
 
@@ -1618,9 +1613,7 @@ dmgtool_scan_dmg () {
 	disp_print_header
 	
 	
-	hdiutil imageinfo "$1" | grep --text 'CRC32'
-
-	if [ "$?" != "0" ]; then
+	if ! hdiutil imageinfo "$1" | grep --text 'CRC32'; then
 		
 		scanningNow="${1##*/}"
 		echo "Scanning $scanningNow for restore"
@@ -1632,9 +1625,7 @@ dmgtool_scan_dmg () {
 			echo ""
 		fi
 
-		asr --verbose imagescan --source "$1"
-
-		if [ "$?" != "0" ]; then
+		if ! asr --verbose imagescan --source "$1"; then
 		
 			return 1
 
@@ -1703,7 +1694,7 @@ main_menu () {
 		echo ""
 		echo "Enter the number or letter for the function you'd like to run and hit return."
 		echo ""
-		read trackToTake
+		read -r trackToTake
 
 		case "$trackToTake" in
 
@@ -1783,7 +1774,7 @@ notify_pushover_remove () {
 
 	echo ""
 	echo "Hit enter to continue."
-	read dummy
+	read -r _
 
 }
 
@@ -1799,7 +1790,8 @@ makedrive_uninstall () {
 
 	local scriptDir
 	scriptDir=$(cd "$executionPath" 2>/dev/null && pwd)
-	local scriptPath="$scriptDir/$(basename "$0")"
+	local scriptPath
+	scriptPath="$scriptDir/$(basename "$0")"
 	local sideConf="$scriptDir/makedrive.conf"
 
 	disp_print_header
@@ -1813,14 +1805,14 @@ makedrive_uninstall () {
 	echo ""
 	echo "Type UNINSTALL and press return to confirm, or press return to cancel."
 	echo ""
-	read uninstallConfirm
+	read -r uninstallConfirm
 
 	if [ "$uninstallConfirm" != "UNINSTALL" ]; then
 		echo ""
 		echo "Uninstall cancelled."
 		echo ""
 		echo "Hit enter to continue."
-		read dummy
+		read -r _
 		return 0
 	fi
 
@@ -1926,7 +1918,7 @@ notify_pushover_setup () {
 		echo ""
 		echo "Enter a number or letter and hit return: "
 		echo ""
-		read pushoverMenuChoice
+		read -r pushoverMenuChoice
 
 		case "$pushoverMenuChoice" in
 
@@ -1996,7 +1988,7 @@ notify_pushover_setup () {
 
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			pushoverMenuChoice=""
 			;;
 
@@ -2005,7 +1997,7 @@ notify_pushover_setup () {
 			notify_pushover_test
 			echo ""
 			echo "Hit enter to continue."
-			read dummy
+			read -r _
 			pushoverMenuChoice=""
 			;;
 
@@ -2138,7 +2130,7 @@ preflight_check_for_restorekit () {
 		echo "restorekit using the image installation process within the script."
 		echo ""
 		echo "Enter 'C' to create the restorekit folder, or any other key to exit."
-		read -n 1 restorekitCheck
+		read -rn 1 restorekitCheck
 		
 		case "$restorekitCheck" in
 		
@@ -2149,7 +2141,7 @@ preflight_check_for_restorekit () {
 				echo "Could not create the restorekit folder. Check permissions and try again."
 				echo ""
 				echo "Hit enter to exit makedrive."
-				read dummy
+				read -r _
 				exit 1
 			fi
 			;;
@@ -2179,15 +2171,18 @@ preflight_check_instance () {
 	if [ -e "$makedriveLockFile" ]; then
 
 		# Look for a root-owned bash process running makedrive
+		# shellcheck disable=SC2009  # need the matching bash process line
 		ps -u root | grep bash | grep makedrive
+		dupInstanceRunning=$?
 
 		# If the last command returned "0", then we know another instance is running
-		if [ "$?" = "0" ] && [[ $EUID -ne 0 ]]; then
+		if [ "$dupInstanceRunning" = "0" ] && [[ $EUID -ne 0 ]]; then
 
 			disp_print_header
 
 			local otherPID killOtherPID
 			# Save the process ID of
+			# shellcheck disable=SC2009  # need the full ps line to extract the PID
 			otherPID=$(ps -u root | grep bash | grep makedrive | head -n 1 | awk '{print $2}')
 		
 			echo "makedrive has detected another instance of the script running."
@@ -2210,7 +2205,7 @@ preflight_check_instance () {
 			echo "Other PID is $otherPID"
 			echo ""
 		
-			read killOtherPID
+			read -r killOtherPID
 		
 			if [ "$killOtherPID" == "P" ] || [ "$killOtherPID" == "p" ]; then
 		
@@ -2275,7 +2270,7 @@ preflight_check_xcode_cli_tools () {
 		echo "macOS installer versions (python3)."
 		echo ""
 		echo "Enter 'I' to install the Xcode Command Line Tools now, or any other key to exit."
-		read -n 1 xcodeCLTCheck
+		read -rn 1 xcodeCLTCheck
 
 		case "$xcodeCLTCheck" in
 
@@ -2286,7 +2281,7 @@ preflight_check_xcode_cli_tools () {
 			echo "Follow the prompts to complete installation, then run makedrive again."
 			echo ""
 			echo "Hit enter to exit makedrive."
-			read dummy
+			read -r _
 			exit 1
 			;;
 
@@ -2350,7 +2345,7 @@ preflight_get_boot_device () {
         echo "without first determining the startup disk for data safety reasons."
         echo ""
         echo "Hit enter to exit makedrive."
-        read dummy
+        read -r _
         exit 1
 
     else
@@ -2396,11 +2391,12 @@ process_check_dmgs () {
 
 		[ -e "${imageFilePaths[$imageCheckCounter]}" ] || continue
 		hdiutil imageinfo "${imageFilePaths[$imageCheckCounter]}" | grep "$dmgCompressionString"
+		compressionPresent=$?
 	
 		# If hdiutil/grep returns not 0 (non-success, image is not correct format), then 
 		# add that image to the imagesNeedingCompression array. Otherwise, nothing
 		# happens at all and the image is OK to continue
-		if [ "$?" != "0" ]; then
+		if [ "$compressionPresent" != "0" ]; then
 		
 			imagesNeedingCompression+=( "${imageFilePaths[$imageCheckCounter]}" )
 		
@@ -2419,12 +2415,13 @@ process_check_dmgs () {
 			
 		
 			dmgtool_compress_dmg "${imagesNeedingCompression[$imageCompressCounter]}" "$compCount" "$needComp"
+			compressResult=$?
 
 			# If dmgtool_compress_dmg returns not 0 (non-success, cannot scan
 			# for restore), then add that image to the imagesThatFailedCompression
 			# array. Otherwise, no action.
 
-			if [ "$?" != "0" ]; then
+			if [ "$compressResult" != "0" ]; then
 
 				imagesThatFailedCompression+=( "${imagesNeedingCompression[$imageCompressCounter]}" )
 
@@ -2445,11 +2442,12 @@ process_check_dmgs () {
 
 		[ -e "${imageFilePaths[$imageCheckCounter]}" ] || continue
 		hdiutil imageinfo "${imageFilePaths[$imageCheckCounter]}" | grep --text 'CRC32'
+		scanInfoPresent=$?
 	
 		# If 2nd grep returns not 0 (non-success, no checksum is found), then 
 		# add that image to the imagesNeedingScan array. Otherwise, nothing
 		# happens at all.
-		if [ "$?" != "0" ]; then
+		if [ "$scanInfoPresent" != "0" ]; then
 
 			imagesNeedingScan+=( "${imageFilePaths[$imageCheckCounter]}" )
 		
@@ -2469,11 +2467,12 @@ process_check_dmgs () {
 			needScan=${#imagesNeedingScan[@]}
 		
 			dmgtool_scan_dmg "${imagesNeedingScan[$imageScanCounter]}" "$scanCount" "$needScan"
+			scanResult=$?
 
 			# If dmgtool_scan_dmg returns not 0 (non-success, cannot scan
 			# for restore), then add that image to the imagesThatFailedScan
 			# array. Otherwise, no action.
-			if [ "$?" != "0" ]; then
+			if [ "$scanResult" != "0" ]; then
 	
 				imagesThatFailedScan+=( "${imagesNeedingScan[$imageScanCounter]}" )
 				
@@ -2521,7 +2520,7 @@ process_check_dmgs () {
 	echo ""
 	echo "Hit enter to continue... "
 	echo ""
-	read dummy
+	read -r _
 	
 	return 0
 }
@@ -2538,8 +2537,10 @@ preflight_get_execution_path
 # the script takes priority over Application Support so that distributed updates
 # are picked up on the very first run even before root is obtained.
 if [ -f "$executionPath/makedrive.conf" ]; then
+	# shellcheck source=/dev/null
 	. "$executionPath/makedrive.conf"
 elif [ -f "$makedriveSupportConf" ]; then
+	# shellcheck source=/dev/null
 	. "$makedriveSupportConf"
 else
 	echo "makedrive configuration file not found."
@@ -2582,4 +2583,5 @@ done
 # Clean up temporary and lock files
 postflight_cleanup
 
+# shellcheck disable=SC2317  # reached by normal fall-through, not dead code
 exit 0
