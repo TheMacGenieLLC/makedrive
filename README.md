@@ -1,6 +1,6 @@
 # makedrive
 
-**Build ready-to-use macOS install and restore drives from a folder of DMGs.**
+**Build ready-to-use macOS install drives from a folder of DMGs.**
 
 makedrive is a single Bash script that automates the tedious parts of making
 macOS installation media: it verifies installers, processes them into restorable
