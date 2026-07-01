@@ -5,6 +5,23 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
+### Build 202 - 2026-07-01
+
+- **Configuration derivation:** addMenuOrder, buildTypeNums, and build type
+  size estimates are now derived automatically from makedrive.conf's image
+  and build-type blocks.
+- **Build type renumbering:** build types are now numbered 1, 2, and 3
+  (previously 10, 11, and 12, a leftover from a subsystem removed in Build
+  200).
+- **macOS 10.15 Catalina boot panic fix:** makedrive was incorrectly
+  filtering out BaseSystem.chunklist and AppleDiagnostics.chunklist files,
+  which the xnu kernel requires for root-dmg authentication at boot. Their
+  absence caused immediate boot panics. These files are now correctly included
+  in SharedSupport and confirmed working on real hardware.
+- **Documentation corrections:** makedrive.conf's location (per-user
+  Application Support, not system-wide) and Pushover credential storage (the
+  login keychain, not the System Keychain) are now described correctly.
+
 ### Build 201 - 2026-06-30
 
 - **EFI volume icons now present correctly in old and new style EFI.**

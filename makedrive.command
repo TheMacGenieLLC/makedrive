@@ -11,7 +11,7 @@
 # https://makedrive.com
 #
 # Current script version:
-currentVersion="2026-06-30 - Build 201"
+currentVersion="2026-07-01 - Build 202"
 
 # Global Variable Declarations
 bootDiskID=""
@@ -1309,6 +1309,12 @@ download_fetch_and_process () {
 		#   BaseSystem.dmg           -> raw CDN file; needed by createinstallmedia and
 		#                              by read_installer_build to extract ProductBuildVersion
 		#   AppleDiagnostics.dmg     -> raw CDN file; needed by createinstallmedia
+		#   BaseSystem.chunklist     -> raw CDN file; the xnu kernel's imageboot
+		#                              authentication (bsd/kern/chunklist.c) requires this
+		#                              sibling file to boot BaseSystem.dmg as root-dmg on
+		#                              10.15 - without it, real hardware panics with
+		#                              "root image authentication failed (err = 2)" (ENOENT)
+		#   AppleDiagnostics.chunklist -> same requirement, for AppleDiagnostics.dmg
 		# We leave InstallInfo.plist untouched (it already has the System Image Info /
 		# Payload Image Info keys that createinstallmedia validates).
 		disp_print_header
@@ -1325,10 +1331,13 @@ download_fetch_and_process () {
 			# Only download the files we need for assembly; skip everything else.
 			# BaseSystem.dmg and AppleDiagnostics.dmg are raw files (not pkgs) that
 			# must be present in SharedSupport for createinstallmedia and build
-			# number detection to work.
+			# number detection to work. Their .chunklist siblings must be present
+			# too, for the kernel's root-dmg authentication at boot (see the
+			# catalog_hfs comment above).
 			case "$_hfsFname" in
 				InstallAssistantAuto.pkg|InstallESDDmg.pkg|\
-				BaseSystem.dmg|AppleDiagnostics.dmg) ;;
+				BaseSystem.dmg|AppleDiagnostics.dmg|\
+				BaseSystem.chunklist|AppleDiagnostics.chunklist) ;;
 				*) continue ;;
 			esac
 			echo "Downloading $_hfsFname..."
@@ -1396,8 +1405,10 @@ download_fetch_and_process () {
 		rm -rf "$_esdStage" "$tmpDir/InstallESDDmg.pkg"
 
 		# BaseSystem.dmg and AppleDiagnostics.dmg are raw CDN files (not packages)
-		# that createinstallmedia reads from SharedSupport.
-		for _dmg in BaseSystem.dmg AppleDiagnostics.dmg; do
+		# that createinstallmedia reads from SharedSupport. Their .chunklist
+		# siblings must land in the same directory, under the same base name,
+		# for the kernel to find them during root-dmg authentication at boot.
+		for _dmg in BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist; do
 			[ -f "$tmpDir/$_dmg" ] && mv "$tmpDir/$_dmg" "$_sharedSupport/$_dmg"
 		done
 
@@ -1620,8 +1631,10 @@ for entry in final:
         # 10.13-10.15: download distribution file + all packages into one directory,
         # then `installer -pkg dist -target <hfs_volume>` assembles the .app without
         # needing write access to the sealed system volume (which blocks -target / on 11+).
-        all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"]
-                        if pkg.get("URL", "") and not pkg.get("URL", "").endswith(".chunklist")]
+        # Chunklist URLs are kept here (not filtered) - BaseSystem.chunklist is required
+        # for 10.15 to boot; download_fetch_and_process's catalog_hfs case is the actual
+        # filter deciding which specific files get downloaded and used.
+        all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"] if pkg.get("URL", "")]
         dist_url = entry["dist_url"]
         total_size = sum(pkg.get("Size", 0) for pkg in entry["packages"] if pkg.get("URL", ""))
         combined = "|".join([dist_url] + all_pkg_urls)
@@ -1868,8 +1881,8 @@ conf_version_newer () {
 # makedrive.conf and updates version strings and build numbers in-place wherever
 # Apple's catalog has a newer minor release for an existing major version slot.
 #
-# Skips beta inst keys (suffix 'a'), INST-A entries, and major version slots not
-# currently present in addMenuOrder.
+# Skips INST-A entries and major version slots not currently present in
+# addMenuOrder.
 #
 # Re-sources makedrive.conf after any changes so the running session reflects
 # the updated paths and build numbers immediately.
@@ -1901,7 +1914,6 @@ download_sync_conf () {
 		instKey=""
 		for menuKey in "${addMenuOrder[@]}"; do
 			[[ "$menuKey" == "inst${keyRoot}"* ]] || continue
-			[[ "$menuKey" == *a ]]               && continue   # skip beta slots
 			_t="${menuKey}DeployType"
 			[ "${!_t}" = "GENERIC" ]             || continue
 			instKey="$menuKey"
@@ -2135,14 +2147,22 @@ build_ask_to_copy_datadrive () {
 	# of the other junk on it, you can elect to not copy the large data
 	# partition. Otherwise, it's a good idea to copy the whole thing.
 	while [ "$okToCopyData" = "" ]; do
-		
+
 		disp_print_header
 
-		# DataDrive Only (type 12) always copies the data partition - it's the
-		# entire point of that build type, so skip the prompt.
-		if [ "$diskType" == "12" ]; then
+		# A build type whose volumes are dataDrive only (e.g. "DataDrive Only")
+		# always copies the data partition - it's the entire point of that
+		# build type, so skip the prompt. Checked by volume composition rather
+		# than a specific type number, since that number can change in
+		# makedrive.conf.
+		local _volumesRef="buildType${diskType}_volumes[@]"
+		local _hasImageKey=0 _volKey
+		for _volKey in "${!_volumesRef}"; do
+			[ "$_volKey" != "dataDrive" ] && _hasImageKey=1
+		done
+		if [ "$_hasImageKey" = "0" ]; then
 			okToCopyData="Y"
-			
+
 		else
 			echo "Do you want to copy the contents of the data partition to disk$diskNum?"
 			echo ""
@@ -4046,19 +4066,98 @@ preflight_get_execution_path
 # is checked last as a one-time upgrade fallback for pre-Build 202 installs.
 _makedrive_legacy_conf="/Library/Application Support/makedrive/makedrive.conf"
 if [ -f "$executionPath/makedrive.conf" ]; then
-	# shellcheck source=/dev/null
-	. "$executionPath/makedrive.conf"
+	_makedrive_active_conf="$executionPath/makedrive.conf"
 elif [ -f "$makedriveSupportConf" ]; then
-	# shellcheck source=/dev/null
-	. "$makedriveSupportConf"
+	_makedrive_active_conf="$makedriveSupportConf"
 elif [ -f "$_makedrive_legacy_conf" ]; then
-	# shellcheck source=/dev/null
-	. "$_makedrive_legacy_conf"
+	_makedrive_active_conf="$_makedrive_legacy_conf"
 else
 	echo "makedrive configuration file not found."
 	echo "Place makedrive.conf alongside makedrive.command and re-run to install it."
 	exit 1
 fi
+# shellcheck source=/dev/null
+. "$_makedrive_active_conf"
+
+# ------------------------------------------------------------------------------
+# Configuration derivation
+# Values computed from makedrive.conf rather than hand-maintained there, so
+# they can't drift out of sync with the image/build-type blocks that back them.
+# ------------------------------------------------------------------------------
+
+# addMenuOrder lists installer keys oldest to newest, derived from every
+# instXXXXMenuLabel key in makedrive.conf (reversed, since new blocks are added
+# at the top of that file) so an image block can be added or removed there
+# without also editing this list. imageFilePaths derives from it for
+# presence/compression/scan checks.
+addMenuOrder=()
+while IFS= read -r _menuKey; do
+	addMenuOrder+=( "$_menuKey" )
+done < <(grep -o '^inst[A-Za-z0-9]*MenuLabel=' "$_makedrive_active_conf" | sed 's/MenuLabel=$//' | tail -r)
+unset _menuKey
+imageFilePaths=()
+for _key in "${addMenuOrder[@]}"; do imageFilePaths+=( "${!_key}" ); done
+unset _key
+
+# buildTypeNums (the registry of valid type numbers, in menu display order)
+# is derived from every buildTypeXX_label key in makedrive.conf, sorted
+# numerically ascending, so a build type can be added, removed, or renumbered
+# there without also editing this list.
+buildTypeNums=()
+while IFS= read -r _btLabelNum; do
+	buildTypeNums+=( "$_btLabelNum" )
+done < <(grep -o '^buildType[0-9][0-9]*_label=' "$_makedrive_active_conf" | sed 's/^buildType//; s/_label=$//' | sort -n)
+unset _btLabelNum
+
+# buildTypeXX_detail is derived, for any type number in buildTypeNums, from
+# the VolSize (not NewImageVolSize) of every non-dataDrive key in that type's
+# buildTypeXX_volumes array in makedrive.conf, summed and rounded up to the
+# nearest 10GB - so it stays correct regardless of which type number a build
+# type is given, or which keys it lists there. A type left with no
+# buildTypeXX_detail at all in makedrive.conf gets one computed here; a type
+# that already defines one there (e.g. DataDrive Only, whose "0G = use
+# remaining space" volume isn't summable) is left untouched.
+_bt_detail_size () {
+	local _key _sizeVar _sizes=""
+	for _key in "$@"; do
+		[ "$_key" = "dataDrive" ] && continue
+		_sizeVar="${_key}VolSize"
+		_sizes="$_sizes ${!_sizeVar%G}"
+	done
+	awk -v vals="$_sizes" 'BEGIN {
+		n = split(vals, a, " ")
+		total = 0
+		for (i = 1; i <= n; i++) total += a[i]
+		c = int(total / 10)
+		if (c * 10 < total) c++
+		printf "%d", c * 10
+	}'
+}
+for _btNum in "${buildTypeNums[@]}"; do
+	_btDetailVar="buildType${_btNum}_detail"
+	[ -n "${!_btDetailVar}" ] && continue
+
+	_btVols=()
+	eval "_btVols=( \"\${buildType${_btNum}_volumes[@]}\" )"
+
+	_btHasImageKey=0 _btHasDataDrive=0
+	for _btVolKey in "${_btVols[@]}"; do
+		if [ "$_btVolKey" = "dataDrive" ]; then
+			_btHasDataDrive=1
+		else
+			_btHasImageKey=1
+		fi
+	done
+	[ "$_btHasImageKey" = "0" ] && continue
+
+	if [ "$_btHasDataDrive" = "1" ]; then
+		printf -v "$_btDetailVar" 'About %sGB plus DataDrive' "$(_bt_detail_size "${_btVols[@]}")"
+	else
+		printf -v "$_btDetailVar" 'About %sGB' "$(_bt_detail_size "${_btVols[@]}")"
+	fi
+done
+unset -f _bt_detail_size
+unset _btNum _btDetailVar _btVols _btHasImageKey _btHasDataDrive _btVolKey
 
 # Performing individual checks once at start of execution, rather than every run
 # through the main application loop
@@ -4078,7 +4177,7 @@ if [ -f "$executionPath/makedrive.conf" ]; then
 elif [ -f "$_makedrive_legacy_conf" ] && [ ! -f "$makedriveSupportConf" ]; then
 	migrate_conf_file "$_makedrive_legacy_conf" "$makedriveSupportConf" "$makedriveSupportDir"
 fi
-unset _makedrive_legacy_conf
+unset _makedrive_legacy_conf _makedrive_active_conf
 
 # Ensure the support directory and its contents are owned by the invoking user
 # so makedrive.conf can be edited without elevated privileges. makedrive runs as

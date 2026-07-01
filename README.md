@@ -74,10 +74,10 @@ an empty one so you can start from scratch.
 ## Configuration
 
 makedrive reads everything it deploys, including image definitions, build
-types, and the Apple catalog URLs, from **`makedrive.conf`**, stored at
-`/Library/Application Support/makedrive/makedrive.conf`. To update a
-deployment, ship a new `makedrive.conf` next to the script and run it once.
-makedrive migrates it into place once it has root.
+types, and the Apple catalog URLs, from **`makedrive.conf`**, stored in the
+invoking user's `~/Library/Application Support/makedrive/makedrive.conf`.
+To update a deployment, ship a new `makedrive.conf` next to the script and
+run it once. makedrive migrates it into place once it has root.
 
 ## Documentation
 
@@ -87,7 +87,7 @@ changelog, is in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 ## Uninstalling
 
 Main Menu option 7 removes makedrive from the host (the Application Support
-folder and its config, any Pushover credentials in the System Keychain, and
+folder and its config, any Pushover credentials in the login keychain, and
 the script itself). It requires typing `UNINSTALL` to confirm. Your
 `restorekit` and any drives you've already built are left untouched.
 
