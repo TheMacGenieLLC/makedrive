@@ -178,10 +178,11 @@ makedrive.conf defines:
 - **Catalog URLs:** the Apple software-update catalog index URLs makedrive
   consults to keep installer build numbers current.
 
-**Where it lives.** makedrive.conf is stored at:
+**Where it lives.** makedrive.conf is stored in the invoking user's home
+directory, at:
 
 ```
-/Library/Application Support/makedrive/makedrive.conf
+~/Library/Application Support/makedrive/makedrive.conf
 ```
 
 On launch, makedrive loads the configuration from next to the script if one
@@ -190,6 +191,11 @@ makedrive.conf found next to the script is migrated into Application
 Support (replacing any existing copy) once makedrive has root. This makes
 updating simple: **ship a new makedrive.conf alongside a new script, run it
 once, and the new configuration is installed.**
+
+Older installs that still have a conf at the legacy system-wide location
+(`/Library/Application Support/makedrive/makedrive.conf`) are migrated to
+the user-level path automatically, once, the first time makedrive runs
+after upgrading.
 
 When makedrive.conf is migrated, the previous copy is archived with a
 timestamp in a **conf archive** subfolder of Application Support. makedrive
@@ -448,7 +454,7 @@ replaces the long-retired Boxcar notification support from older versions.
 Configure it from Main Menu option 6:
 
 - **Configure or update credentials:** enter your Pushover user key and
-  application (API) token. They're stored in the macOS **System Keychain**,
+  application (API) token. They're stored in your macOS **login keychain**,
   not in any plain-text file.
 - **Send a test notification:** confirms your credentials work.
 - **Remove credentials:** deletes the stored keys from the keychain, and
@@ -464,9 +470,9 @@ simply doesn't send notifications.
 Main Menu option 7 removes makedrive from the host. To prevent accidents it
 requires you to type `UNINSTALL` to confirm. When confirmed it removes:
 
-- the `/Library/Application Support/makedrive` folder (including
+- the `~/Library/Application Support/makedrive` folder (including
   makedrive.conf and all conf archives),
-- Pushover credentials from the System Keychain (if any are present), and
+- Pushover credentials from your login keychain (if any are present), and
 - the makedrive script itself.
 
 restorekit and any drives you've already built are not touched.
@@ -506,8 +512,8 @@ avoided if you prefer an offline workflow:
 
 makedrive.conf is the configuration that drives partitioning and
 deployment. It's controlled by the administrator who runs makedrive, and
-it's the intended trust boundary. Pushover credentials are stored in the
-System Keychain rather than in any file on disk.
+it's the intended trust boundary. Pushover credentials are stored in your
+login keychain rather than in any file on disk.
 
 ### Installer binary re-signing (10.10 through 10.15)
 
