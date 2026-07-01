@@ -1868,8 +1868,8 @@ conf_version_newer () {
 # makedrive.conf and updates version strings and build numbers in-place wherever
 # Apple's catalog has a newer minor release for an existing major version slot.
 #
-# Skips beta inst keys (suffix 'a'), INST-A entries, and major version slots not
-# currently present in addMenuOrder.
+# Skips INST-A entries and major version slots not currently present in
+# addMenuOrder.
 #
 # Re-sources makedrive.conf after any changes so the running session reflects
 # the updated paths and build numbers immediately.
@@ -1901,7 +1901,6 @@ download_sync_conf () {
 		instKey=""
 		for menuKey in "${addMenuOrder[@]}"; do
 			[[ "$menuKey" == "inst${keyRoot}"* ]] || continue
-			[[ "$menuKey" == *a ]]               && continue   # skip beta slots
 			_t="${menuKey}DeployType"
 			[ "${!_t}" = "GENERIC" ]             || continue
 			instKey="$menuKey"
