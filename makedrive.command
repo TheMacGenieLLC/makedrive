@@ -1309,6 +1309,12 @@ download_fetch_and_process () {
 		#   BaseSystem.dmg           -> raw CDN file; needed by createinstallmedia and
 		#                              by read_installer_build to extract ProductBuildVersion
 		#   AppleDiagnostics.dmg     -> raw CDN file; needed by createinstallmedia
+		#   BaseSystem.chunklist     -> raw CDN file; the xnu kernel's imageboot
+		#                              authentication (bsd/kern/chunklist.c) requires this
+		#                              sibling file to boot BaseSystem.dmg as root-dmg on
+		#                              10.15 - without it, real hardware panics with
+		#                              "root image authentication failed (err = 2)" (ENOENT)
+		#   AppleDiagnostics.chunklist -> same requirement, for AppleDiagnostics.dmg
 		# We leave InstallInfo.plist untouched (it already has the System Image Info /
 		# Payload Image Info keys that createinstallmedia validates).
 		disp_print_header
@@ -1325,10 +1331,13 @@ download_fetch_and_process () {
 			# Only download the files we need for assembly; skip everything else.
 			# BaseSystem.dmg and AppleDiagnostics.dmg are raw files (not pkgs) that
 			# must be present in SharedSupport for createinstallmedia and build
-			# number detection to work.
+			# number detection to work. Their .chunklist siblings must be present
+			# too, for the kernel's root-dmg authentication at boot (see the
+			# catalog_hfs comment above).
 			case "$_hfsFname" in
 				InstallAssistantAuto.pkg|InstallESDDmg.pkg|\
-				BaseSystem.dmg|AppleDiagnostics.dmg) ;;
+				BaseSystem.dmg|AppleDiagnostics.dmg|\
+				BaseSystem.chunklist|AppleDiagnostics.chunklist) ;;
 				*) continue ;;
 			esac
 			echo "Downloading $_hfsFname..."
@@ -1396,8 +1405,10 @@ download_fetch_and_process () {
 		rm -rf "$_esdStage" "$tmpDir/InstallESDDmg.pkg"
 
 		# BaseSystem.dmg and AppleDiagnostics.dmg are raw CDN files (not packages)
-		# that createinstallmedia reads from SharedSupport.
-		for _dmg in BaseSystem.dmg AppleDiagnostics.dmg; do
+		# that createinstallmedia reads from SharedSupport. Their .chunklist
+		# siblings must land in the same directory, under the same base name,
+		# for the kernel to find them during root-dmg authentication at boot.
+		for _dmg in BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist; do
 			[ -f "$tmpDir/$_dmg" ] && mv "$tmpDir/$_dmg" "$_sharedSupport/$_dmg"
 		done
 
@@ -1620,8 +1631,10 @@ for entry in final:
         # 10.13-10.15: download distribution file + all packages into one directory,
         # then `installer -pkg dist -target <hfs_volume>` assembles the .app without
         # needing write access to the sealed system volume (which blocks -target / on 11+).
-        all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"]
-                        if pkg.get("URL", "") and not pkg.get("URL", "").endswith(".chunklist")]
+        # Chunklist URLs are kept here (not filtered) - BaseSystem.chunklist is required
+        # for 10.15 to boot; download_fetch_and_process's catalog_hfs case is the actual
+        # filter deciding which specific files get downloaded and used.
+        all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"] if pkg.get("URL", "")]
         dist_url = entry["dist_url"]
         total_size = sum(pkg.get("Size", 0) for pkg in entry["packages"] if pkg.get("URL", ""))
         combined = "|".join([dist_url] + all_pkg_urls)
