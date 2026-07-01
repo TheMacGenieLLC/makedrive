@@ -11,7 +11,7 @@
 # https://makedrive.com
 #
 # Current script version:
-currentVersion="2026-06-28 - Build 201"
+currentVersion="2026-06-30 - Build 201"
 
 # Global Variable Declarations
 bootDiskID=""
@@ -31,9 +31,14 @@ trackToTake=""
 makedriveInstTmpImageFile="/var/tmp/makedrivetemp.sparseimage"
 makedriveLockFile="/var/tmp/makedrivelockfile"
 
-# Canonical location for makedrive configuration on the host Mac
-makedriveSupportDir="/Library/Application Support/makedrive"
-makedriveSupportConf="$makedriveSupportDir/makedrive.conf"
+# Configuration and credentials are stored in the invoking user's home directory.
+# Before sudo elevation $SUDO_USER is empty and $USER is the real user; after
+# elevation $SUDO_USER is the real user. Both cases resolve to the same home.
+_makedrive_userhome=$(eval echo "~${SUDO_USER:-$USER}")
+makedriveSupportDir="${_makedrive_userhome}/Library/Application Support/makedrive"
+makedriveSupportConf="${makedriveSupportDir}/makedrive.conf"
+makedrivePushoverKeychain="${_makedrive_userhome}/Library/Keychains/login.keychain-db"
+unset _makedrive_userhome
 
 # Image definitions, imageFilePaths, and build type configurations are
 # loaded from makedrive.conf at startup.
@@ -44,6 +49,134 @@ declare -a imagesThatFailedCompression
 declare -a imagesThatFailedScan
 
 # Main Functions
+
+# ------------------------------------------------------------------------------
+# normalize_icon_for_efi
+# Normalizes a .icns file to include it32 + t8mk legacy chunks alongside the
+# existing PNG slices (ic08 / ic09 / ic10). Pre-2013 EFI firmware cannot decode
+# the PNG-only format used in 10.7-10.14 installer icons and reads only the
+# legacy it32 (128×128 raw RGB, PackBits) + t8mk (128×128 alpha mask) format.
+# Newer EFI and macOS continue to use the existing PNG slices.
+#
+# If PIL is unavailable or normalization fails, returns silently without error -
+# the icon still works, just may not appear in older EFI boot pickers.
+#
+# To disable: comment out the call in dmg_apply_volume_icon (search for ICON_NORM)
+#
+# $1 - Path to the .icns file to normalize (modified in-place)
+# ------------------------------------------------------------------------------
+normalize_icon_for_efi () {
+
+	local iconPath="$1"
+	[ -z "$iconPath" ] || [ ! -f "$iconPath" ] && return 0
+
+	MAKEDRIVE_ICON_NORM_PATH="$iconPath" python3 << 'MAKEDRIVE_ICON_NORM_PYEOF'
+import os, io, struct, sys
+
+iconPath = os.environ.get("MAKEDRIVE_ICON_NORM_PATH", "")
+if not iconPath or not os.path.isfile(iconPath):
+    sys.exit(0)
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit(0)
+
+ICNS_MAGIC = b'icns'
+PNG_SIG    = b'\x89PNG\r\n\x1a\n'
+
+def parse_icns(data):
+    if data[:4] != ICNS_MAGIC:
+        return []
+    chunks, off = [], 8
+    while off + 8 <= len(data):
+        typ  = data[off:off+4]
+        size = struct.unpack_from('>I', data, off+4)[0]
+        if size < 8 or off + size > len(data):
+            break
+        chunks.append((typ, data[off+8:off+size]))
+        off += size
+    return chunks
+
+def build_icns(chunks):
+    body = bytearray()
+    for typ, payload in chunks:
+        body += typ + struct.pack('>I', 8 + len(payload)) + payload
+    return ICNS_MAGIC + struct.pack('>I', 8 + len(body)) + bytes(body)
+
+def packbits_encode(data):
+    # icns-specific RLE variant (it32/il32/ih32/is32), NOT classic PackBits:
+    # literal header 0x00-0x7F -> next (N+1) bytes; repeat header 0x80-0xFF ->
+    # next byte repeated (N-0x80+3) times, so a repeat run needs >=3 identical
+    # bytes (max 130), not 2 as in classic PackBits.
+    out, i, n = bytearray(), 0, len(data)
+    while i < n:
+        run_len = 1
+        while i + run_len < n and run_len < 130 and data[i + run_len] == data[i]:
+            run_len += 1
+        if run_len >= 3:
+            out.append(0x80 + (run_len - 3))
+            out.append(data[i])
+            i += run_len
+            continue
+        start = i
+        i += 1
+        while i < n and (i - start) < 128:
+            k = 1
+            while i + k < n and k < 130 and data[i + k] == data[i]:
+                k += 1
+            if k >= 3:
+                break
+            i += 1
+        out.append(i - start - 1)
+        out.extend(data[start:i])
+    return bytes(out)
+
+try:
+    with open(iconPath, 'rb') as f:
+        icns_data = f.read()
+
+    chunks = parse_icns(icns_data)
+    if not chunks:
+        sys.exit(0)
+
+    # Already has legacy chunks - nothing to do
+    if any(t == b'it32' for t, _ in chunks):
+        sys.exit(0)
+
+    # Find a PNG source chunk; prefer largest (ic10 > ic09 > ic08)
+    src_png = None
+    for preferred in (b'ic10', b'ic09', b'ic08'):
+        for typ, payload in chunks:
+            if typ == preferred and payload[:8] == PNG_SIG:
+                src_png = payload
+                break
+        if src_png:
+            break
+
+    if not src_png:
+        sys.exit(0)
+
+    img = Image.open(io.BytesIO(src_png)).convert("RGBA").resize((128, 128), Image.LANCZOS)
+    r, g, b, a = img.split()
+
+    it32_payload = (b'\x00\x00\x00\x00' +
+                    packbits_encode(r.tobytes()) +
+                    packbits_encode(g.tobytes()) +
+                    packbits_encode(b.tobytes()))
+    t8mk_payload = a.tobytes()
+
+    # Prepend legacy chunks so they appear first (some EFI parsers scan forward)
+    new_chunks = [(b'it32', it32_payload), (b't8mk', t8mk_payload)] + chunks
+    with open(iconPath, 'wb') as f:
+        f.write(build_icns(new_chunks))
+
+except Exception:
+    pass
+
+MAKEDRIVE_ICON_NORM_PYEOF
+}
+
 
 # ------------------------------------------------------------------------------
 # dmg_apply_volume_icon
@@ -86,6 +219,10 @@ dmg_apply_volume_icon () {
 	fi
 
 	if [ -n "$icnsPath" ]; then
+		# ICON_NORM: Normalize icon for EFI compatibility (pre-2013 firmware support)
+		# To disable: comment out the next line
+		normalize_icon_for_efi "$icnsPath"
+
 		cp "$icnsPath" "$2/.VolumeIcon.icns"
 		setfile -a C "$2"
 	fi
@@ -108,25 +245,47 @@ dmg_apply_volume_icon () {
 # ------------------------------------------------------------------------------
 add_copy_single_dmg () {
 
-	local testDevice grepReturn dmgBaseDir
+	local testDevice grepReturn dmgBaseDir _pkgExtractedApp=""
 
 	disp_print_header
 
 	# If $5 is empty, we don't have a source DMG yet; prompt the user to find
-	# one. If $5 has contents, use that path directly as the source DMG.
+	# one. If $5 points to an existing file, use it directly. If $5 is set but
+	# the file doesn't exist, the installer has not been assembled yet - offer
+	# pkg extraction to source it from the Apple-provided flat package.
 	if [ "$5" = "" ]; then
-		
+
 		echo "Drag the DMG for $1 into "
 		echo "the terminal window and hit return to add the image into restorekit."
 		echo ""
 		read -r imagePathToAdd
-	
-	else
-		
+
+		# Dragging a file into Terminal backslash-escapes spaces (and other
+		# special characters) in the path. read -r keeps those backslashes
+		# verbatim, so the quoted path handed to hdiutil below would name a
+		# file that doesn't exist. Strip the escaping backslashes so the path
+		# matches the real file.
+		imagePathToAdd="${imagePathToAdd//\\/}"
+
+	elif [ -f "$5" ]; then
+
 		imagePathToAdd="$5"
-	
+
+	else
+
+		# $5 is set but the ESD doesn't exist. Derive the installer app path
+		# by stripping the SharedSupport suffix and offer pkg extraction.
+		local _derivedApp="${5%/Contents/SharedSupport/InstallESD.dmg}"
+		if [ "$_derivedApp" = "$5" ] || [ -d "$_derivedApp" ]; then
+			imagePathToAdd="$5"
+		else
+			add_installer_from_pkg "$_derivedApp" "$1" || return 1
+			_pkgExtractedApp="$_derivedApp"
+			imagePathToAdd="$5"
+		fi
+
 	fi
-	
+
 	echo "Verifying disk image source and destination..."
 	echo ""
 	
@@ -141,6 +300,7 @@ add_copy_single_dmg () {
 		echo ""
 		disp_pause_for_input
 		imagePathToAdd=""
+		[ -n "$_pkgExtractedApp" ] && rm -rf "$_pkgExtractedApp"
 		return 1
 	fi
 
@@ -188,18 +348,28 @@ add_copy_single_dmg () {
 		if rsync -Wh --progress "$imagePathToAdd" "$2"; then
 
 			# Determine icon source. Use $6 (external app path) when provided.
-			# Otherwise probe the DMG read-only for an embedded Install*.app
-			# (e.g. a pre-built installer volume like Mavericks). Retail DVD
-			# images that contain no installer app fall through with no source
-			# and skip the icon step entirely.
+			# Otherwise probe the DMG read-only for an embedded installer
+			# bundle (e.g. a pre-built installer volume like Mavericks, or a
+			# retail DVD). Modern installers are named "Install*.app"; classic
+			# retail DVDs (10.3 Panther / 10.4 Tiger) ship an extensionless
+			# "Install Mac OS X" bundle under "Welcome to Mac OS X". DVDs with
+			# no installer bundle fall through with no source and skip the icon
+			# step entirely.
 			local iconSource="$6"
+			# If no app path was passed but we just extracted one from a pkg,
+			# use the extracted app as the icon source before probing the DMG.
+			[ -z "$iconSource" ] && [ -n "$_pkgExtractedApp" ] && iconSource="$_pkgExtractedApp"
 			local hasEmbeddedApp="N"
 			if [ -z "$iconSource" ]; then
 				local probeMount=""
 				probeMount=$(hdiutil attach "$2" -nobrowse -readonly -noverify 2>/dev/null \
 				    | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
 				if [ -n "$probeMount" ]; then
-					find "$probeMount" -name "Install*.app" -type d -maxdepth 2 \
+					find "$probeMount" -type d -maxdepth 2 \
+					    \( -name "Install Mac OS X" \
+					       -o -name "Install Mac OS X*.app" \
+					       -o -name "Install OS X*.app" \
+					       -o -name "Install macOS*.app" \) \
 					    -print -quit 2>/dev/null | grep -q . && hasEmbeddedApp="Y"
 					hdiutil detach -quiet "$probeMount" 2>/dev/null
 				fi
@@ -209,22 +379,78 @@ add_copy_single_dmg () {
 			# Compress and scan run exactly once, after any icon work is done.
 			if [ -n "$iconSource" ] || [ "$hasEmbeddedApp" = "Y" ]; then
 				local iconRwDmg="/var/tmp/makedrive-icon-rw.dmg"
+				local iconShadow="/var/tmp/makedrive-icon.shadow"
+				local iconMergedDmg="/var/tmp/makedrive-icon-merged.dmg"
 				local iconMount=""
 				echo "Converting image for icon application..."
 				if hdiutil convert "$2" -format UDRW -o "$iconRwDmg"; then
-					iconMount=$(hdiutil attach "$iconRwDmg" -nobrowse -noverify 2>/dev/null \
+					# DVD-style images (Apple_Driver_ATAPI) refuse -readwrite on Apple
+					# Silicon. A shadow file provides a writable overlay without altering
+					# the base; we merge it back before handing off to dmgtool_compress.
+					rm -f "$iconShadow"
+					iconMount=$(hdiutil attach "$iconRwDmg" -shadow "$iconShadow" \
+					    -nobrowse -noverify 2>/dev/null \
 					    | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
 					if [ -n "$iconMount" ]; then
 						local applySrc="$iconSource"
-						[ -z "$applySrc" ] && applySrc=$(find "$iconMount" -name "Install*.app" \
-						    -type d -maxdepth 2 -print -quit 2>/dev/null)
+						[ -z "$applySrc" ] && applySrc=$(find "$iconMount" -type d -maxdepth 2 \
+						    \( -name "Install Mac OS X" \
+						       -o -name "Install Mac OS X*.app" \
+						       -o -name "Install OS X*.app" \
+						       -o -name "Install macOS*.app" \) \
+						    -print -quit 2>/dev/null)
 						[ -n "$applySrc" ] && dmg_apply_volume_icon "$applySrc" "$iconMount"
 						hdiutil detach -quiet "$iconMount" 2>/dev/null
 					fi
-					rm -f "$2"
-					mv "$iconRwDmg" "$2"
+					echo "Merging icon changes..."
+					if hdiutil convert "$iconRwDmg" -shadow "$iconShadow" \
+					    -format UDRW -o "$iconMergedDmg" 2>/dev/null; then
+						# Zero finderInfo[0..5] in the merged image. Running post-merge
+						# ensures the shadow write-back (macOS updates the volume header
+						# on mount/unmount) cannot override the patch. finderInfo[6,7]
+						# (UUID) are preserved. finderInfo[1]=0 means no open-folder CNID
+						# so Finder does not auto-open on a fresh hardware connect.
+						# 10.7+ images use GUID and have no APM DDM; they exit early.
+						python3 -c "
+import sys, struct
+with open(sys.argv[1], 'r+b') as f:
+    ddm = f.read(4)
+    if len(ddm) < 4:
+        sys.exit(0)
+    hfs_off = None
+    if struct.unpack_from('>H', ddm)[0] == 0x4552:
+        # APM: locate HFS+ partition via partition map
+        blk_size = struct.unpack_from('>H', ddm, 2)[0] or 512
+        i = 1
+        while True:
+            f.seek(blk_size * i)
+            blk = f.read(512)
+            if len(blk) < 512 or struct.unpack_from('>H', blk)[0] != 0x504D:
+                break
+            if b'HFS' in blk[48:80] and hfs_off is None:
+                hfs_off = struct.unpack_from('>I', blk, 8)[0] * blk_size
+            i += 1
+    else:
+        # No APM: bare HFS+ image - volume header at offset 1024
+        f.seek(1024)
+        if struct.unpack_from('>H', f.read(2))[0] in (0x482B, 0x4244):
+            hfs_off = 0
+    if hfs_off is not None:
+        base = hfs_off + 1024 + 80
+        for idx in range(8):
+            f.seek(base + idx * 4)
+            if struct.unpack('>I', f.read(4))[0]:
+                f.seek(base + idx * 4)
+                f.write(b'\\x00\\x00\\x00\\x00')
+" "$iconMergedDmg" 2>/dev/null
+						rm -f "$2"
+						mv "$iconMergedDmg" "$2"
+					else
+						rm -f "$2"
+						mv "$iconRwDmg" "$2"
+					fi
 				fi
-				rm -f "$iconRwDmg"
+				rm -f "$iconRwDmg" "$iconShadow" "$iconMergedDmg"
 			fi
 
 			dmgtool_compress_dmg "$2"
@@ -260,6 +486,7 @@ add_copy_single_dmg () {
 	disp_pause_for_input
 
 	imagePathToAdd=""
+	[ -n "$_pkgExtractedApp" ] && rm -rf "$_pkgExtractedApp"
 
 }
 
@@ -284,56 +511,133 @@ add_create_install_dmg () {
 
 
 # ------------------------------------------------------------------------------
-# verify_installer_build
-# Confirms that the installer application at $1 contains the expected macOS
-# build string $2. An empty build string always returns success (permissive).
+# read_installer_build
+# Returns the macOS build string actually present in the installer at $1, or
+# nothing if it cannot be determined. This is the single source of truth for
+# both verification and error reporting; it never fails the caller.
 #
-# Old-format installers (10.11 El Capitan through 10.15 Catalina) store the
-# build version in Contents/SharedSupport/InstallInfo.plist, which is directly
-# readable without mounting anything.
+# Three installer layouts are handled, newest first:
 #
-# New-format installers (Big Sur 11 and later) embed the build metadata inside
-# Contents/SharedSupport/SharedSupport.dmg. This function mounts that image
-# read-only with -nobrowse, searches plist files for the build string, then
-# detaches before returning.
+#   New-format (Big Sur 11+): build metadata is inside SharedSupport.dmg, read
+#     from Assets.0.Build in the MobileAsset XML.
 #
-# Returns 0 if the build string is found (or is empty), non-zero otherwise.
+#   InstallESD generation (10.7 Lion through 10.15 Catalina): InstallInfo.plist
+#     records only the version, not the build. The build lives in BaseSystem.dmg
+#     at System/Library/CoreServices/SystemVersion.plist (ProductBuildVersion).
+#     BaseSystem.dmg sits either directly in SharedSupport (Mojave/Catalina) or
+#     nested inside InstallESD.dmg (older), so we mount whatever is needed and
+#     always detach both, in reverse order.
+#
+#   Fallback: a build-number-shaped token scanned out of InstallInfo.plist, for
+#     any installer that happens to record it there.
 #
 # $1 - Path to the installer application bundle
-# $2 - macOS build string to verify (e.g. "19H2"); empty string skips check
+# ------------------------------------------------------------------------------
+read_installer_build () {
+
+	local installInfo="${1}/Contents/SharedSupport/InstallInfo.plist"
+	local ssDmg="${1}/Contents/SharedSupport/SharedSupport.dmg"
+	local esdDmg="${1}/Contents/SharedSupport/InstallESD.dmg"
+	local directBase="${1}/Contents/SharedSupport/BaseSystem.dmg"
+	local build=""
+
+	# Explicit key written by catalog_hfs assembly: ProductBuildVersion in
+	# InstallInfo.plist is the authoritative build from the catalog dist file.
+	# Check this before mounting BaseSystem.dmg, whose recovery build may differ.
+	if [ -f "$installInfo" ]; then
+		build=$(plutil -extract "ProductBuildVersion" raw -o - "$installInfo" 2>/dev/null)
+		if [ -n "$build" ]; then
+			printf '%s' "$build"
+			return 0
+		fi
+	fi
+
+	# New-format (11+): build is inside SharedSupport.dmg.
+	if [ -f "$ssDmg" ]; then
+		local ssAttach ssDevice ssMountPoint
+		ssAttach=$(hdiutil attach -noverify -nobrowse -readonly "$ssDmg" 2>/dev/null)
+		ssDevice=$(echo "$ssAttach"     | awk 'NR==1{print $1}')
+		ssMountPoint=$(echo "$ssAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+		if [ -n "$ssDevice" ]; then
+			build=$(plutil -extract "Assets.0.Build" raw -o - \
+			    "${ssMountPoint}/com_apple_MobileAsset_MacSoftwareUpdate/com_apple_MobileAsset_MacSoftwareUpdate.xml" \
+			    2>/dev/null)
+			hdiutil detach -quiet "$ssDevice" 2>/dev/null
+		fi
+		printf '%s' "$build"
+		return 0
+	fi
+
+	# InstallESD generation (10.7-10.15): read ProductBuildVersion from the
+	# SystemVersion.plist inside BaseSystem.dmg.
+	if [ -f "$esdDmg" ] || [ -f "$directBase" ]; then
+		local esdDevice="" baseDmg=""
+
+		if [ -f "$directBase" ]; then
+			baseDmg="$directBase"
+		else
+			local esdAttach esdMountPoint
+			esdAttach=$(hdiutil attach -noverify -nobrowse -readonly "$esdDmg" 2>/dev/null)
+			esdDevice=$(echo "$esdAttach"     | awk 'NR==1{print $1}')
+			esdMountPoint=$(echo "$esdAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+			[ -n "$esdMountPoint" ] && baseDmg="${esdMountPoint}/BaseSystem.dmg"
+		fi
+
+		if [ -n "$baseDmg" ] && [ -f "$baseDmg" ]; then
+			local baseAttach baseDevice baseMountPoint
+			baseAttach=$(hdiutil attach -noverify -nobrowse -readonly "$baseDmg" 2>/dev/null)
+			baseDevice=$(echo "$baseAttach"     | awk 'NR==1{print $1}')
+			baseMountPoint=$(echo "$baseAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+			if [ -n "$baseDevice" ]; then
+				build=$(plutil -extract "ProductBuildVersion" raw -o - \
+				    "${baseMountPoint}/System/Library/CoreServices/SystemVersion.plist" \
+				    2>/dev/null)
+				hdiutil detach -quiet "$baseDevice" 2>/dev/null
+			fi
+		fi
+
+		[ -n "$esdDevice" ] && hdiutil detach -quiet "$esdDevice" 2>/dev/null
+		if [ -n "$build" ]; then
+			printf '%s' "$build"
+			return 0
+		fi
+		# build is empty: BaseSystem.dmg not found inside InstallESD.dmg (10.15+
+		# moved it out of InstallESD). Fall through to InstallInfo.plist below.
+	fi
+
+	# Fallback: read ProductBuildVersion from InstallInfo.plist.
+	# For catalog-assembled 10.15 installers this plist is the authoritative
+	# source; for others it provides a regex-scannable build token.
+	if [ -f "$installInfo" ]; then
+		build=$(plutil -extract "ProductBuildVersion" raw -o - "$installInfo" 2>/dev/null)
+		[ -z "$build" ] && \
+			build=$(grep -Eo '[0-9]{2}[A-Z][0-9a-z]+' "$installInfo" 2>/dev/null | head -1)
+		printf '%s' "$build"
+		return 0
+	fi
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
+# verify_installer_build
+# Confirms that the installer application at $1 reports the expected macOS build
+# string $2. Delegates extraction to read_installer_build, which handles every
+# installer layout. An empty build string always returns success (permissive).
+#
+# Returns 0 if the builds match (or $2 is empty), non-zero otherwise.
+#
+# $1 - Path to the installer application bundle
+# $2 - macOS build string to verify (e.g. "16G29"); empty string skips check
 # ------------------------------------------------------------------------------
 verify_installer_build () {
 
 	# Empty build string: no build configured, skip verification.
 	[ -z "$2" ] && return 0
 
-	local installInfo="${1}/Contents/SharedSupport/InstallInfo.plist"
-	local ssDmg="${1}/Contents/SharedSupport/SharedSupport.dmg"
-	local ssDevice ssResult actualBuild
-
-	# Old-format (10.11–10.15): build string is in InstallInfo.plist directly.
-	if [ -f "$installInfo" ]; then
-		grep -qF "$2" "$installInfo"
-		return $?
-	fi
-
-	# New-format (11+): build string is inside SharedSupport.dmg at a known path.
-	[ -f "$ssDmg" ] || return 1
-
-	local ssAttach ssMountPoint
-	ssAttach=$(hdiutil attach -noverify -nobrowse -readonly "$ssDmg" 2>/dev/null)
-	ssDevice=$(echo "$ssAttach"    | awk 'NR==1{print $1}')
-	ssMountPoint=$(echo "$ssAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
-	[ -n "$ssDevice" ] || return 1
-
-	ssResult=1
-	actualBuild=$(plutil -extract "Assets.0.Build" raw -o - \
-	    "${ssMountPoint}/com_apple_MobileAsset_MacSoftwareUpdate/com_apple_MobileAsset_MacSoftwareUpdate.xml" \
-	    2>/dev/null)
-	[ "$actualBuild" = "$2" ] && ssResult=0
-
-	hdiutil detach -quiet "$ssDevice" 2>/dev/null
-	return "$ssResult"
+	[ "$(read_installer_build "$1")" = "$2" ]
 
 }
 
@@ -342,6 +646,9 @@ verify_installer_build () {
 # add_mas_build_mismatch
 # Displays the standard build-mismatch error used by both createinstallmedia
 # functions when verify_installer_build returns non-zero.
+#
+# $1 - Expected build string from the conf (optional)
+# $2 - Build string actually found in the installer (optional)
 # ------------------------------------------------------------------------------
 add_mas_build_mismatch () {
 
@@ -351,14 +658,24 @@ add_mas_build_mismatch () {
 	echo "the version chosen. Verify the installer and try again."
 	echo ""
 
+	if [ -n "$1" ]; then
+		echo "Expected build:  $1"
+		if [ -n "$2" ]; then
+			echo "Installer build: $2"
+		else
+			echo "Installer build: (could not be determined)"
+		fi
+		echo ""
+	fi
+
 }
 
 
 # ------------------------------------------------------------------------------
 # add_mas_createinstallmedia_impl
 # Shared implementation for both createinstallmedia wrapper functions below.
-# $7 = "yos" selects the --applicationpath path with codesign workarounds
-# (El Capitan through High Sierra); any other value uses --downloadassets
+# $7 = "mav" selects the --applicationpath path with codesign workarounds
+# (Yosemite through High Sierra); any other value uses --downloadassets
 # (Mojave and later).
 #
 # $1 - Path to MAS install application given by user
@@ -367,14 +684,17 @@ add_mas_build_mismatch () {
 # $4 - Final name of installation DMG volume
 # $5 - Path to final destination of install DMG within restorekit
 # $6 - Display name of MAS install application
-# $7 - "yos" for --applicationpath style; omit or empty for --downloadassets
+# $7 - "mav" for --applicationpath style; omit or empty for --downloadassets
 # ------------------------------------------------------------------------------
 add_mas_createinstallmedia_impl () {
 
 	disp_print_header
 
+	echo "Verifying installer build..."
+	echo ""
+
 	if ! verify_installer_build "$1" "$2"; then
-		add_mas_build_mismatch
+		add_mas_build_mismatch "$2" "$(read_installer_build "$1")"
 		disp_pause_for_input
 		return 1
 	fi
@@ -402,26 +722,59 @@ add_mas_createinstallmedia_impl () {
 	echo "Creating $6 bootable DMG..."
 	echo ""
 
-	if [ "$7" = "yos" ]; then
+	# Clear the quarantine flag so macOS skips the one-time Gatekeeper
+	# assessment of the multi-GB installer bundle, which otherwise stalls
+	# createinstallmedia for minutes on older hosts with slow disks.
+	xattr -dr com.apple.quarantine "$1" 2>/dev/null
+	# FinderInfo xattrs on any resource inside the bundle (e.g. SharedSupport
+	# DMGs) cause codesign to refuse signing with "detritus not allowed".
+	xattr -dr com.apple.FinderInfo "$1" 2>/dev/null
 
-		local cimOrig="$1/Contents/Resources/createinstallmedia"
-		local cimBak="/var/tmp/makedrive-createinstallmedia-orig"
-		local cimTemp="/var/tmp/makedrive-createinstallmedia"
-		# Remove the bundle-level Apple signature first so macOS has nothing
-		# to fail against when the binary is swapped — a missing signature
-		# produces no verification loop, whereas a broken one does.
-		codesign --remove-signature "$1" 2>/dev/null
-		# Strip Apple signing on the binary, re-sign ad-hoc, swap in-place so
-		# createinstallmedia's bundle-location check passes, then restore.
-		cp -p "$cimOrig" "$cimBak"
-		cp "$cimBak" "$cimTemp"
-		codesign --remove-signature "$cimTemp" 2>/dev/null
-		codesign -f -s - "$cimTemp" 2>/dev/null
-		cp "$cimTemp" "$cimOrig"
-		rm -f "$cimTemp"
-		"$cimOrig" --volume "/Volumes/$newImageVolName" --applicationpath "$1" --nointeraction
+	if [ "$7" = "mav" ]; then
+
+		# On Golden Gate and later, AMFI validates any binary marked as a platform
+		# binary via trust cache - a per-OS-build whitelist of Apple-shipped hashes.
+		# Old installer bundles contain many such binaries (createinstallmedia,
+		# framework dylibs, nested helper daemons) that are absent from newer trust
+		# caches. codesign --deep recurses only into bundle containers, silently
+		# skipping standalone Mach-O executables in any Resources directory.
+		# Signing by file path strips the platform claim from each binary directly,
+		# replacing it with a locally trusted ad-hoc signature that bypasses the
+		# trust cache check. Sign all exec-bit files first so the outer bundle seal
+		# reflects their updated hashes.
+		echo "Re-signing installer binaries..."
+		local _rsBin
+		while IFS= read -r -d '' _rsBin; do
+			codesign -f -s - "$_rsBin" 2>/dev/null
+		done < <(find "$1" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0)
+		echo "Re-signing installer bundle..."
+		codesign -f -s - "$1" 2>/dev/null
+		echo ""
+
+		# Apple shipped a Sierra installer where CFBundleShortVersionString in
+		# Info.plist does not match the version createinstallmedia was built to
+		# expect. The binary checks this and forkbombs when they differ. Patch
+		# Info.plist to match what the binary expects before running.
+		# Patching Info.plist only breaks the bundle seal (CodeResources hash),
+		# not the Mach-O signatures; AMFI checks the latter, so this is safe.
+		local cimPlistVer cimBinVer cimMajor
+		cimPlistVer=$(plutil -extract CFBundleShortVersionString raw \
+		    "$1/Contents/Info.plist" 2>/dev/null)
+		cimMajor="${cimPlistVer%%.*}"
+		cimBinVer=$(strings "$1/Contents/Resources/createinstallmedia" 2>/dev/null \
+		    | grep -E "^${cimMajor}\.[0-9]+\.[0-9]+$" | head -1)
+		if [ -n "$cimBinVer" ] && [ "$cimPlistVer" != "$cimBinVer" ]; then
+			echo "Correcting installer version mismatch ($cimPlistVer → $cimBinVer)..."
+			echo ""
+			plutil -replace CFBundleShortVersionString -string "$cimBinVer" \
+			    "$1/Contents/Info.plist" 2>/dev/null
+		fi
+
+		echo "macOS may run a security scan on the installer before proceeding."
+		echo "This is normal and can take a few minutes."
+		echo ""
+		"$1/Contents/Resources/createinstallmedia" --volume "/Volumes/$newImageVolName" --applicationpath "$1" --nointeraction
 		local cimResult=$?
-		mv "$cimBak" "$cimOrig"
 
 		if [ "$cimResult" != "0" ]; then
 			echo ""
@@ -437,6 +790,28 @@ add_mas_createinstallmedia_impl () {
 
 	else
 
+		# Re-sign only 10.14 (Darwin 18) and 10.15 (Darwin 19). These carry
+		# platform-identifier binaries absent from newer trust caches, causing
+		# AMFI to SIGKILL createinstallmedia and framework dylibs on Golden Gate
+		# and later. 11+ binaries are still in current trust caches and run
+		# without re-signing; ad-hoc re-signing those on Apple Silicon carries
+		# real risk since Reduced Security still enforces identity requirements
+		# that ad-hoc signatures do not satisfy.
+		case "$2" in 18*|19*)
+			echo "Re-signing installer binaries..."
+			local _rsBin
+			while IFS= read -r -d '' _rsBin; do
+				codesign -f -s - "$_rsBin" 2>/dev/null
+			done < <(find "$1" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0)
+			echo "Re-signing installer bundle..."
+			codesign -f -s - "$1" 2>/dev/null
+			echo ""
+			;;
+		esac
+
+		echo "macOS may run a security scan on the installer before proceeding."
+		echo "This is normal and can take a few minutes."
+		echo ""
 		if ! "$1/Contents/Resources/createinstallmedia" --volume "/Volumes/$newImageVolName" --nointeraction --downloadassets; then
 			echo ""
 			echo "createinstallmedia failed. Check the installer and available disk space,"
@@ -465,7 +840,7 @@ add_mas_createinstallmedia_impl () {
 	# checking workaround for new (2025 era) behavior for macOS Big Sur installer
 	# not properly unmounting causing creation process to fail compress and scan
 	# and using force after waiting for disk activity to wind down
-	[ "$7" != "yos" ] && sleep 3
+	[ "$7" != "mav" ] && sleep 3
 
 	hdiutil detach -force "/Volumes/$4"
 
@@ -474,14 +849,14 @@ add_mas_createinstallmedia_impl () {
 	if ! mv "$makedriveInstTmpImageFile" "$5"; then
 		echo ""
 		echo "Could not move the completed DMG to restorekit. Check permissions and disk space."
-		[ "$7" != "yos" ] && hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
+		[ "$7" != "mav" ] && hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
 		echo ""
 		disp_pause_for_input
 		return 1
 	fi
 
 	# Detach the Shared Support volume left mounted by createinstallmedia (Mojave+ only).
-	[ "$7" != "yos" ] && hdiutil detach -force "/Volumes/Shared Support"
+	[ "$7" != "mav" ] && hdiutil detach -force "/Volumes/Shared Support"
 
 	dmgtool_compress_dmg "$5"
 	dmgtool_scan_dmg "$5"
@@ -516,9 +891,235 @@ add_mas_createinstallmedia () {
 
 
 # ------------------------------------------------------------------------------
-# add_mas_createinstallmedia_yos
+# host_macos_version
+# Echoes the host's full macOS version string (e.g. 10.15.7, 13.6.1, 26.1), or
+# nothing if it cannot be determined. Compare it with conf_version_newer rather
+# than extracting a single field: before macOS 11 the release number is the
+# second component (10.14, 10.15) and from 11 on it is the first (11, 12, … 26),
+# and component-wise comparison orders both schemes correctly (10.15 < 11).
+# ------------------------------------------------------------------------------
+host_macos_version () {
+
+	sw_vers -productVersion 2>/dev/null
+
+}
+
+
+# ------------------------------------------------------------------------------
+# add_installer_from_pkg
+# Assembles a legacy OS installer application in /Applications from an
+# Apple-provided flat package (.pkg). Used for OS X/macOS 10.7-10.12, where
+# the installer is no longer available through the Mac App Store and must be
+# sourced from Apple's direct-download flat package. The flat package contains
+# a thin installer app shell (Payload, ~10 MB) and the multi-GB OS content
+# (InstallESD.dmg) as a sibling file inside the same component package
+# directory; the postinstall script that normally wires them together is
+# bypassed (it uses JavaScript distribution scripts incompatible with modern
+# pkg engines). This function replicates that wiring manually.
+#
+# Members are pulled individually with xar rather than expanding the whole
+# package, so the thin Payload can be extracted and version-checked first and
+# the multi-GB InstallESD.dmg is only extracted once the version matches. The
+# Payload's bundled InstallInfo.plist records the macOS version (e.g. 10.12.6)
+# but not the build; the exact build still lives only inside InstallESD.dmg, so
+# the authoritative build check (verify_installer_build) runs later against the
+# assembled app. This pre-check exists to catch the wrong package being supplied
+# before paying for the multi-GB extraction, comparing at major.minor
+# granularity so a point-release difference is left to the build check.
+#
+# The InstallESD.dmg is moved (not copied) into the assembled app - a move on
+# the same volume is instant and uses no additional disk space.
+#
+# The caller is responsible for removing $1 after it is no longer needed.
+#
+# $1 - Expected path of the assembled installer app (e.g.
+#      /Applications/Install macOS Sierra.app)
+# $2 - Display name containing the expected macOS version (e.g.
+#      "macOS 10.12.6 App Store Installer"); empty skips the version pre-check
+# Returns 0 on success with the app at $1 and InstallESD.dmg in SharedSupport,
+#         non-zero on failure (app is not present at $1).
+# ------------------------------------------------------------------------------
+add_installer_from_pkg () {
+
+	local appPath="$1"
+	local expandDir="/private/var/tmp/makedrive_pkgexpand"
+	local pkgPath esdMember compDir payloadPath stageApp stagedAppDir
+	local expectedVer pkgVer instInfo
+	local _dmgDevice=""
+	local suppliedPath="${3:-}"
+
+	# Pull the dotted version (e.g. 10.12.6) out of the display name for the
+	# pre-extraction check; empty if the name carries no version-shaped token.
+	expectedVer=$(printf '%s' "$2" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+
+	if [ -n "$suppliedPath" ]; then
+
+		pkgPath="$suppliedPath"
+
+	else
+
+		disp_print_header
+
+		echo "The installer application is not in /Applications."
+		echo ""
+		echo "Drag the Apple-provided installer .pkg or .dmg into this Terminal"
+		echo "window and press Return to continue, or press Return alone to cancel:"
+		echo ""
+		read -r pkgPath
+
+		# Terminal drag-in backslash-escapes spaces and other special characters.
+		pkgPath="${pkgPath//\\/}"
+
+		if [ -z "$pkgPath" ]; then
+			return 1
+		fi
+
+		if [ ! -f "$pkgPath" ]; then
+			echo ""
+			echo "File not found. Verify the path and try again."
+			echo ""
+			disp_pause_for_input
+			return 1
+		fi
+
+	fi
+
+	# If a DMG was provided, mount it and locate the single installer package
+	# at its root; subsequent xar calls read from pkgPath on the mounted volume.
+	case "$pkgPath" in *.dmg|*.DMG)
+		disp_print_header
+		echo "Mounting installer disk image..."
+		echo ""
+		local _dmgOut _dmgMount
+		_dmgOut=$(hdiutil attach -nobrowse -readonly -noverify "$pkgPath" 2>/dev/null)
+		_dmgDevice=$(printf '%s' "$_dmgOut" | awk 'NR==1{print $1}')
+		_dmgMount=$(printf '%s' "$_dmgOut" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+		if [ -z "$_dmgDevice" ] || [ -z "$_dmgMount" ]; then
+			echo "Could not mount the disk image. Verify the file and try again."
+			echo ""
+			disp_pause_for_input
+			return 1
+		fi
+		pkgPath=$(find "$_dmgMount" -maxdepth 1 -name "*.pkg" -type f | head -1)
+		if [ -z "$pkgPath" ]; then
+			echo "No installer package found on the disk image."
+			echo ""
+			hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+			_dmgDevice=""
+			disp_pause_for_input
+			return 1
+		fi
+		;;
+	esac
+
+	disp_print_header
+
+	# Locate the InstallESD.dmg member and the component directory holding it.
+	# Both the ESD and the thin Payload live side by side under that directory.
+	esdMember=$(xar -tf "$pkgPath" 2>/dev/null | grep -m1 '/InstallESD.dmg$')
+	if [ -z "$esdMember" ]; then
+		echo "This does not look like a macOS installer package (no InstallESD.dmg)."
+		echo ""
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+	compDir="${esdMember%/InstallESD.dmg}"
+
+	echo "Reading installer package..."
+	echo ""
+	rm -rf "$expandDir"
+	mkdir -p "$expandDir"
+
+	# Extract only the thin Payload first (a few MB) so the package version can
+	# be checked before committing to the multi-GB InstallESD.dmg extraction.
+	if ! xar -x -C "$expandDir" -f "$pkgPath" "$compDir/Payload" 2>/dev/null; then
+		echo "Could not read the package. Verify the file and try again."
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+	payloadPath="$expandDir/$compDir/Payload"
+	if [ ! -f "$payloadPath" ]; then
+		echo "Unexpected package structure: Payload not found."
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+
+	stageApp="$expandDir/stage"
+	mkdir -p "$stageApp"
+	bsdtar -C "$stageApp" -xf "$payloadPath" 2>/dev/null
+	stagedAppDir=$(find "$stageApp" -maxdepth 1 -name "*.app" | head -1)
+	if [ -z "$stagedAppDir" ]; then
+		echo "Could not extract the installer application from the package."
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+
+	# Pre-extraction version check. The thin app's InstallInfo.plist names the
+	# macOS version the bundled ESD provides; compare it (major.minor) to the
+	# version expected for the chosen installer before extracting the ESD.
+	instInfo="$stagedAppDir/Contents/SharedSupport/InstallInfo.plist"
+	pkgVer=$(plutil -extract "System Image Info.version" raw -o - "$instInfo" 2>/dev/null)
+	if [ -n "$expectedVer" ] && [ -n "$pkgVer" ] && \
+	   [ "$(printf '%s' "$expectedVer" | cut -d. -f1-2)" != "$(printf '%s' "$pkgVer" | cut -d. -f1-2)" ]; then
+		echo "This package is for macOS $pkgVer, but the chosen installer expects"
+		echo "macOS $expectedVer. Verify you supplied the correct package and try again."
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+
+	# Version matches - extract the multi-GB ESD and assemble the installer.
+	echo "Extracting installer content..."
+	echo ""
+	if ! xar -x -C "$expandDir" -f "$pkgPath" "$esdMember" 2>/dev/null; then
+		echo "Could not extract the installer content. Check available disk space."
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+		return 1
+	fi
+
+	# PKG reads are complete; detach the source DMG before local moves.
+	[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+
+	# Place the staged app at the expected path (renaming so it lands correctly
+	# regardless of the bundle name inside the package) and move the ESD into it.
+	rm -rf "$appPath"
+	mv "$stagedAppDir" "$appPath"
+	mkdir -p "$appPath/Contents/SharedSupport"
+	mv "$expandDir/$esdMember" "$appPath/Contents/SharedSupport/InstallESD.dmg"
+
+	rm -rf "$expandDir"
+
+	if [ ! -d "$appPath" ]; then
+		echo "Could not assemble the installer application."
+		echo ""
+		disp_pause_for_input
+		return 1
+	fi
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
+# add_mas_createinstallmedia_mav
 # Processes a Mac App Store system installer into an install DMG that can be
-# restored to disk. Required from 10.11 El Capitan through 10.13 High Sierra,
+# restored to disk. Required from 10.10 Yosemite through 10.13 High Sierra,
 # which use the --applicationpath flag for createinstallmedia.
 #
 # $1 - Path to MAS install application given by user
@@ -528,9 +1129,611 @@ add_mas_createinstallmedia () {
 # $5 - Path to final destination of install DMG within restorekit
 # $6 - Display name of MAS install application
 # ------------------------------------------------------------------------------
-add_mas_createinstallmedia_yos () {
+add_mas_createinstallmedia_mav () {
 
-	add_mas_createinstallmedia_impl "$1" "$2" "$3" "$4" "$5" "$6" "yos"
+	# Sierra (10.12) has a known forkbomb issue on all hosts: CFBundleShortVersionString
+	# mismatch causes createinstallmedia to spawn runaway child instances (EAGAIN /
+	# error 35). Fixed by patching Info.plist to match the version the binary expects
+	# before running. Darwin 16 = macOS Sierra 10.12; build strings always start with "16".
+	local installerBuild="$2"
+	[ -z "$installerBuild" ] && installerBuild=$(read_installer_build "$1")
+	local isSierra=0
+	case "$installerBuild" in 16*) isSierra=1 ;; esac
+	local isMavericks=0
+	case "$installerBuild" in 13*) isMavericks=1 ;; esac
+
+	# For 10.10-10.12, the installer is no longer available through the Mac App Store
+	# and must be sourced from Apple's direct-download flat package. If the app is not
+	# already in /Applications, offer pkg extraction via add_installer_from_pkg.
+	# Sierra on Golden Gate has the additional constraint that its JavaScript distribution
+	# scripts are rejected by the host's pkg engine - surfaced here so the user
+	# understands why the MAS cannot be used, before the pkg prompt appears.
+	# Mavericks (10.9) has no canonical Apple package source; the app must already
+	# be present in /Applications.
+	local _pkgExtracted=0
+	if [ ! -d "$1" ]; then
+
+		if [ "$isMavericks" = "1" ]; then
+			disp_print_header
+			echo "Install OS X Mavericks is not in /Applications and has no canonical"
+			echo "package source. To add this installer:"
+			echo ""
+			echo "  Option 1: Mount an existing 10.9.5 createinstallmedia image, copy"
+			echo "             Install OS X Mavericks.app to /Applications, and try again."
+			echo ""
+			echo "  Option 2: Place a pre-built 10.9.5 installer DMG directly into"
+			echo "             the restorekit Install folder."
+			echo ""
+			disp_pause_for_input
+			return 1
+		fi
+
+		if [ "$isSierra" = "1" ]; then
+			local hostVer
+			hostVer=$(host_macos_version)
+			if [ -n "$hostVer" ] && ! conf_version_newer "26" "$hostVer"; then
+				disp_print_header
+				echo "macOS Sierra (10.12) cannot be downloaded or installed from the Mac App"
+				echo "Store on Golden Gate (macOS 26+). Its installer package uses JavaScript"
+				echo "distribution scripts that are incompatible with this host's pkg engine."
+				echo ""
+				echo "You can proceed by providing the Apple-provided InstallOS.pkg file."
+				echo ""
+			fi
+		fi
+
+		add_installer_from_pkg "$1" "$6" || return 1
+		_pkgExtracted=1
+
+	fi
+
+	add_mas_createinstallmedia_impl "$1" "$2" "$3" "$4" "$5" "$6" "mav"
+	local _result=$?
+
+	[ "$_pkgExtracted" = "1" ] && rm -rf "$1"
+
+	return $_result
+
+}
+
+
+# ------------------------------------------------------------------------------
+# download_fetch_and_process
+# Downloads a macOS installer and processes it through the standard add-installer
+# pipeline. Handles three source types:
+#   cdn_dmg       - single DMG from Apple CDN (10.7-10.12); passes it to
+#                   add_installer_from_pkg to assemble the installer app
+#   catalog_single - single InstallAssistant.pkg (11+); installer to /
+#   catalog_hfs    - packages (10.13-10.15); pkgutil expand → app + InstallESD.dmg
+# After the pipeline completes the assembled/installed app is removed.
+#
+# $1 - conf key (e.g. "inst1015i")
+# $2 - source type: "cdn_dmg" | "catalog_single" | "catalog_hfs"
+# $3 - URL, or pipe-separated list for catalog_hfs: dist_url|pkg1_url|pkg2_url|...
+# $4 - display label (e.g. "10.15.7 App Store Install")
+# ------------------------------------------------------------------------------
+download_fetch_and_process () {
+
+	local confKey="$1" dlType="$2" dlURLs="$3" dlLabel="$4"
+
+	# Resolve conf variables via indirect expansion
+	local _v appPath buildNum newVolSize finalName instPath dispName addFunc srcPath volName
+
+	_v="${confKey}AppPath";         appPath="${!_v}"
+	_v="${confKey}BuildNumber";     buildNum="${!_v}"
+	_v="${confKey}NewImageVolSize"; newVolSize="${!_v}"
+	_v="${confKey}FinalName";       finalName="${!_v}"
+	instPath="${!confKey}"
+	_v="${confKey}DispName";        dispName="${!_v}"
+	_v="${confKey}AddFunc";         addFunc="${!_v}"
+	_v="${confKey}SourceImagePath"; srcPath="${!_v}"
+	_v="${confKey}VolName";         volName="${!_v}"
+
+	local tmpDir
+	tmpDir=$(mktemp -d -t makedrive-dl) || {
+		echo "Could not create temporary download directory."
+		echo ""
+		disp_pause_for_input
+		return 1
+	}
+
+	local _assembledApp=""
+
+	case "$dlType" in
+
+	cdn_dmg )
+
+		disp_print_header
+		echo "Downloading $dlLabel..."
+		echo "Press Control-C to cancel."
+		echo ""
+
+		local dmgPath="$tmpDir/installer.dmg"
+		if ! curl --location --progress-bar --fail "$dlURLs" -o "$dmgPath" 2>&1; then
+			echo ""
+			echo "Download failed. Check your network connection and try again."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		echo ""
+
+		if ! add_installer_from_pkg "$appPath" "$dispName" "$dmgPath"; then
+			rm -rf "$tmpDir"
+			return 1
+		fi
+		_assembledApp="$appPath"
+		;;
+
+	catalog_single )
+
+		disp_print_header
+		echo "Downloading $dlLabel..."
+		echo "Press Control-C to cancel."
+		echo ""
+
+		local pkgPath="$tmpDir/InstallAssistant.pkg"
+		if ! curl --location --progress-bar --fail "$dlURLs" -o "$pkgPath" 2>&1; then
+			echo ""
+			echo "Download failed. Check your network connection and try again."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		echo ""
+		echo "Installing $dlLabel to /Applications..."
+		echo "(This may take a few minutes.)"
+		echo ""
+		if ! installer -pkg "$pkgPath" -target /; then
+			echo ""
+			echo "Installation failed. Check available disk space and try again."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+		_assembledApp="$appPath"
+		;;
+
+	catalog_hfs )
+
+		# Assemble the installer .app from the downloaded packages using pkgutil.
+		# The installer(8) binary rejects 10.13-10.15 packages on arm64/macOS 26+
+		# regardless of distribution-file patching, so we expand the packages directly:
+		#   InstallAssistantAuto.pkg -> app skeleton with the correct InstallInfo.plist
+		#   InstallESDDmg.pkg        -> InstallESD.dmg (7.5 GB base system image)
+		#   BaseSystem.dmg           -> raw CDN file; needed by createinstallmedia and
+		#                              by read_installer_build to extract ProductBuildVersion
+		#   AppleDiagnostics.dmg     -> raw CDN file; needed by createinstallmedia
+		# We leave InstallInfo.plist untouched (it already has the System Image Info /
+		# Payload Image Info keys that createinstallmedia validates).
+		disp_print_header
+		echo "Downloading $dlLabel..."
+		echo "Press Control-C to cancel."
+		echo ""
+
+		local -a _hfsURLs
+		IFS='|' read -ra _hfsURLs <<< "$dlURLs"
+		local _hfsURL _hfsFname
+		for _hfsURL in "${_hfsURLs[@]}"; do
+			[ -z "$_hfsURL" ] && continue
+			_hfsFname="${_hfsURL##*/}"
+			# Only download the files we need for assembly; skip everything else.
+			# BaseSystem.dmg and AppleDiagnostics.dmg are raw files (not pkgs) that
+			# must be present in SharedSupport for createinstallmedia and build
+			# number detection to work.
+			case "$_hfsFname" in
+				InstallAssistantAuto.pkg|InstallESDDmg.pkg|\
+				BaseSystem.dmg|AppleDiagnostics.dmg) ;;
+				*) continue ;;
+			esac
+			echo "Downloading $_hfsFname..."
+			if ! curl --location --progress-bar --fail "$_hfsURL" \
+			          -o "$tmpDir/$_hfsFname" 2>&1; then
+				echo ""
+				echo "Download of $_hfsFname failed. Check your network connection and try again."
+				echo ""
+				rm -rf "$tmpDir"
+				disp_pause_for_input
+				return 1
+			fi
+		done
+
+		local _autoStage="$tmpDir/auto_stage"
+		local _esdStage="$tmpDir/esd_stage"
+
+		echo ""
+		echo "Expanding installer package..."
+		if ! pkgutil --expand-full "$tmpDir/InstallAssistantAuto.pkg" "$_autoStage" 2>/dev/null; then
+			echo "Could not expand InstallAssistantAuto.pkg."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		local _stagedApp
+		_stagedApp=$(find "$_autoStage/Payload" -maxdepth 2 -name "*.app" -type d 2>/dev/null | head -1)
+		if [ -z "$_stagedApp" ]; then
+			echo "Could not locate installer app in expanded package."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		echo "Expanding ESD package (this may take several minutes - the package is large)..."
+		if ! pkgutil --expand-full "$tmpDir/InstallESDDmg.pkg" "$_esdStage" 2>/dev/null; then
+			echo "Could not expand InstallESDDmg.pkg."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		local _esdDmg
+		_esdDmg=$(find "$_esdStage" -name "InstallESD.dmg" 2>/dev/null | head -1)
+		if [ -z "$_esdDmg" ]; then
+			echo "Could not locate InstallESD.dmg in expanded ESD package."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		local _sharedSupport="$_stagedApp/Contents/SharedSupport"
+		if ! mv "$_esdDmg" "$_sharedSupport/InstallESD.dmg"; then
+			echo "Could not place InstallESD.dmg in SharedSupport."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+		rm -rf "$_esdStage" "$tmpDir/InstallESDDmg.pkg"
+
+		# BaseSystem.dmg and AppleDiagnostics.dmg are raw CDN files (not packages)
+		# that createinstallmedia reads from SharedSupport.
+		for _dmg in BaseSystem.dmg AppleDiagnostics.dmg; do
+			[ -f "$tmpDir/$_dmg" ] && mv "$tmpDir/$_dmg" "$_sharedSupport/$_dmg"
+		done
+
+		# Write the authoritative build number from the catalog dist file into
+		# InstallInfo.plist. The catalog's BaseSystem.dmg is the recovery image and
+		# may carry a different (older) build string; read_installer_build checks
+		# ProductBuildVersion here first and skips the BaseSystem.dmg mount.
+		plutil -insert "ProductBuildVersion" -string "$buildNum" \
+		    "$_sharedSupport/InstallInfo.plist" 2>/dev/null || true
+
+		rm -rf "$appPath"
+		if ! mv "$_stagedApp" "$appPath"; then
+			echo "Could not place the installer application in /Applications."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+		_assembledApp="$appPath"
+		;;
+
+	esac
+
+	rm -rf "$tmpDir"
+
+	# Dispatch to the standard add-installer pipeline - same calls as add_menu_main
+	case "$addFunc" in
+
+	COPY_SINGLE )
+		add_copy_single_dmg "$dispName" "$instPath" "$volName" "$buildNum" "$srcPath" "$appPath"
+		;;
+
+	CREATE_INSTALL_MEDIA_MAV )
+		add_mas_createinstallmedia_mav "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
+		;;
+
+	CREATE_INSTALL_MEDIA )
+		add_mas_createinstallmedia "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
+		;;
+
+	esac
+
+	# Clean up any app that was installed or assembled to /Applications
+	[ -n "$_assembledApp" ] && [ -d "$_assembledApp" ] && rm -rf "$_assembledApp"
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
+# download_installer_menu
+# Presents a list of macOS installers available for direct download from Apple.
+# Versions 10.13 and newer come from Apple's software-update catalog (fetched
+# on demand). Versions 10.7-10.12 (except 10.9, which has no Apple-hosted
+# source) come from hardcoded Apple CDN URLs. After the user selects a version
+# the download and processing are handled by download_fetch_and_process.
+# ------------------------------------------------------------------------------
+download_installer_menu () {
+
+	disp_print_header
+	echo "Fetching available installer list from Apple..."
+	echo ""
+
+	local syncFile
+	syncFile=$(mktemp -t makedrive-dlcatalog) || {
+		echo "Could not create temp file."
+		echo ""
+		disp_pause_for_input
+		return 1
+	}
+
+	# Extended catalog fetch: mirrors startup_sync_versions but also captures
+	# download URLs and sizes for the latest installer per major version.
+	local _catURLs _menuOrder
+	printf -v _catURLs '%s\n' "${catalogURLs[@]}"
+	printf -v _menuOrder '%s\n' "${addMenuOrder[@]}"
+	MAKEDRIVE_CATALOG_URLS="$_catURLs" MAKEDRIVE_MENU_ORDER="$_menuOrder" \
+	python3 << 'MAKEDRIVE_DLCAT_PYEOF' > "$syncFile" 2>/dev/null
+import subprocess, gzip, plistlib, sys, re, os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def fetch(url, timeout=30):
+    try:
+        r = subprocess.run(
+            ["curl", "--silent", "--fail", "--location",
+             "--max-time", str(timeout), "--user-agent", "makedrive", url],
+            capture_output=True, timeout=timeout + 10)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+CATALOG_URLS = [u for u in os.environ.get("MAKEDRIVE_CATALOG_URLS", "").splitlines() if u]
+MENU_ORDER   = [k for k in os.environ.get("MAKEDRIVE_MENU_ORDER",   "").splitlines() if k]
+
+products = {}
+for url in CATALOG_URLS:
+    data = fetch(url, timeout=60)
+    if not data:
+        continue
+    try:
+        raw = gzip.decompress(data)
+    except Exception:
+        raw = data
+    try:
+        for pid, prod in plistlib.loads(raw).get("Products", {}).items():
+            products.setdefault(pid, prod)
+    except Exception:
+        pass
+
+if not products:
+    sys.exit(0)
+
+installer_products = {
+    pid: prod for pid, prod in products.items()
+    if "InstallAssistantPackageIdentifiers" in prod.get("ExtendedMetaInfo", {})
+    and prod.get("Distributions", {}).get("English")
+}
+
+def get_version_build(item):
+    pid, prod = item
+    data = fetch(prod["Distributions"]["English"], timeout=15)
+    if not data:
+        return None
+    text = data.decode("utf-8", errors="ignore")
+    vm = re.search(r"<key>VERSION</key>\s*<string>([^<]+)</string>", text)
+    bm = re.search(r"<key>BUILD</key>\s*<string>([^<]+)</string>", text)
+    version = vm.group(1).strip() if vm else None
+    build   = bm.group(1).strip() if bm else ""
+    if not version:
+        return None
+    return (pid, version, build, prod.get("Packages", []), prod["Distributions"]["English"])
+
+def parse_ver(v):
+    try:
+        return tuple(int(x) for x in str(v).strip().split("."))
+    except Exception:
+        return (0,)
+
+def parse_build(b):
+    # Apple build strings look like "19H15" or "17F66a": digits, a revision
+    # letter, a point number, and an optional hotfix suffix letter. Plain
+    # string comparison is wrong here ("19H15" < "19H4" lexically, since
+    # '1' < '4') - parse into a tuple so the point number compares
+    # numerically.
+    m = re.match(r'^(\d+)([A-Za-z]+)(\d+)([a-zA-Z]*)$', str(b).strip())
+    if not m:
+        return (0, '', 0, '')
+    major, letter, point, suffix = m.groups()
+    return (int(major), letter, int(point), suffix)
+
+raw_results = []
+with ThreadPoolExecutor(max_workers=15) as ex:
+    for fut in as_completed([ex.submit(get_version_build, item)
+                             for item in installer_products.items()]):
+        r = fut.result()
+        if r:
+            raw_results.append(r)
+
+# Keep latest per major version; skip pre-10.13 and 16-25.
+# 10.13-10.15 use catalog_hfs (installer → temp HFS+ volume).
+# 10.7-10.12 are handled separately via hardcoded Apple CDN URLs below.
+# Multiple catalog products can share the same VERSION string (e.g. three
+# different builds - 19H2, 19H4, 19H15 - all reporting "10.15.7" for
+# supplemental updates), so build must be compared too; otherwise whichever
+# entry is processed first wins regardless of how outdated it actually is.
+newest = {}
+for pid, version, build, packages, dist_url in raw_results:
+    p = parse_ver(version)
+    if (p[0] == 10 and (len(p) < 2 or p[1] < 13)) or 16 <= p[0] <= 25:
+        continue
+    bucket = "10." + str(p[1]) if p[0] == 10 and len(p) > 1 else str(p[0])
+    sortKey = (p, parse_build(build))
+    if bucket not in newest or sortKey > newest[bucket]["_sortKey"]:
+        newest[bucket] = {"version": version, "build": build, "packages": packages, "dist_url": dist_url, "_sortKey": sortKey}
+
+SKIP = {"InstallAssistantAuto.pkg", "MajorOSInfo.pkg", "InstallInfo.plist",
+        "UpdateBrain.zip", "com_apple_MobileAsset_MacSoftwareUpdate.plist"}
+
+def real_packages(packages):
+    result = []
+    for pkg in packages:
+        url  = pkg.get("URL", "")
+        name = url.split("/")[-1]
+        if name.endswith(".chunklist") or name in SKIP:
+            continue
+        size = pkg.get("Size", 0)
+        if size > 0:
+            result.append((url, size))
+    return result
+
+def conf_key_for(version):
+    p = parse_ver(version)
+    major = p[0]
+    key_root = (1000 + p[1]) if major == 10 else (major * 100)
+    prefix = f"inst{key_root}"
+    for k in MENU_ORDER:
+        if k.startswith(prefix) and not k.endswith("a"):
+            return k
+    return None
+
+final = sorted(newest.values(), key=lambda e: parse_ver(e["version"]), reverse=True)
+count = 0
+rows = []
+for entry in final:
+    version = entry["version"]
+    key     = conf_key_for(version)
+    if not key:
+        continue
+    pkgs = real_packages(entry["packages"])
+    p = parse_ver(version)
+    if p[0] >= 11:
+        # 11+: single InstallAssistant.pkg installs the app via `installer`
+        url  = next((u for u, s in pkgs if "InstallAssistant.pkg" in u), "")
+        size = next((s for u, s in pkgs if "InstallAssistant.pkg" in u), 0)
+        if not url:
+            continue
+        rows.append((key, entry["build"], "catalog_single", url, size))
+    elif p[0] == 10 and p[1] >= 13:
+        # 10.13-10.15: download distribution file + all packages into one directory,
+        # then `installer -pkg dist -target <hfs_volume>` assembles the .app without
+        # needing write access to the sealed system volume (which blocks -target / on 11+).
+        all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"]
+                        if pkg.get("URL", "") and not pkg.get("URL", "").endswith(".chunklist")]
+        dist_url = entry["dist_url"]
+        total_size = sum(pkg.get("Size", 0) for pkg in entry["packages"] if pkg.get("URL", ""))
+        combined = "|".join([dist_url] + all_pkg_urls)
+        rows.append((key, entry["build"], "catalog_hfs", combined, total_size))
+
+print(f"MAKEDRIVE_DLCAT_COUNT={len(rows)}")
+for i, (key, build, dtype, url, size) in enumerate(rows):
+    print(f'MAKEDRIVE_DLCAT_{i}_KEY="{key}"')
+    print(f'MAKEDRIVE_DLCAT_{i}_BUILD="{build}"')
+    print(f'MAKEDRIVE_DLCAT_{i}_TYPE="{dtype}"')
+    print(f'MAKEDRIVE_DLCAT_{i}_URL="{url}"')
+    print(f'MAKEDRIVE_DLCAT_{i}_BYTES={size}')
+MAKEDRIVE_DLCAT_PYEOF
+
+	if ! grep -q "^MAKEDRIVE_DLCAT_COUNT=" "$syncFile" 2>/dev/null; then
+		rm -f "$syncFile"
+		echo "Could not fetch the installer list from Apple's catalog."
+		echo "Check your network connection and try again."
+		echo ""
+		disp_pause_for_input
+		return 1
+	fi
+
+	# shellcheck source=/dev/null
+	source "$syncFile"
+	rm -f "$syncFile"
+
+	local catCount="$MAKEDRIVE_DLCAT_COUNT"
+
+	# Build unified download list: catalog entries (newest first, from Python),
+	# followed by CDN entries for 10.7-10.12 (newest first; 10.9 intentionally absent).
+	local -a dlKeys dlLabels dlTypes dlURLs dlBytes
+
+	local i _kv _tv _uv _bv _labV
+	for (( i = 0; i < catCount; i++ )); do
+		_kv="MAKEDRIVE_DLCAT_${i}_KEY"
+		_tv="MAKEDRIVE_DLCAT_${i}_TYPE"
+		_uv="MAKEDRIVE_DLCAT_${i}_URL"
+		_bv="MAKEDRIVE_DLCAT_${i}_BYTES"
+		_labV="${!_kv}MenuLabel"
+		dlKeys+=("${!_kv}")
+		dlLabels+=("${!_labV}")
+		dlTypes+=("${!_tv}")
+		dlURLs+=("${!_uv}")
+		dlBytes+=("${!_bv}")
+	done
+
+	# CDN entries - hardcoded Apple URLs, verified 2026-06
+	local -a _cdnKeys=( "inst1012i" "inst1011i" "inst1010i" "inst108i" "inst107i" )
+	local -a _cdnURLs=(
+		"https://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg"
+		"https://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2021/macos/031-0627-20210614-90D11F33-1A65-42DD-BBEA-E1D9F43A6B3F/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2021/macos/041-7683-20210614-E610947E-C7CE-46EB-8860-D26D71F0D3EA/InstallMacOSX.dmg"
+	)
+	local -a _cdnBytes=( 5007882126 6204629298 5718074248 4449317520 4720237409 )
+
+	local _ck _labV2
+	for (( i = 0; i < ${#_cdnKeys[@]}; i++ )); do
+		_ck="${_cdnKeys[$i]}"
+		_labV2="${_ck}MenuLabel"
+		dlKeys+=("$_ck")
+		dlLabels+=("${!_labV2}")
+		dlTypes+=("cdn_dmg")
+		dlURLs+=("${_cdnURLs[$i]}")
+		dlBytes+=("${_cdnBytes[$i]}")
+	done
+
+	local totalCount=${#dlKeys[@]}
+	local dlChoice selIdx _gb
+
+	while true; do
+
+		disp_print_header
+
+		echo "Choose a macOS installer to download from Apple:"
+		echo ""
+		echo "  10.9 Mavericks is not available from Apple - add it manually via option 1."
+		echo ""
+
+		for (( i = 0; i < totalCount; i++ )); do
+			_gb=$(awk -v b="${dlBytes[$i]}" 'BEGIN {printf "%.1f GB", b/1024/1024/1024}')
+			printf " %2d. %-45s %s\n" $(( i + 1 )) "${dlLabels[$i]}" "$_gb"
+		done
+
+		echo ""
+		echo "  X. Return to Main Menu"
+		echo ""
+		echo "Enter a number to download, or X to return:"
+		echo ""
+		read -r dlChoice
+
+		case "$dlChoice" in
+
+		[Xx]) return 0 ;;
+
+		*)
+			if [ "$dlChoice" -ge 1 ] 2>/dev/null && \
+			   [ "$dlChoice" -le "$totalCount" ] 2>/dev/null; then
+				selIdx=$(( dlChoice - 1 ))
+				download_fetch_and_process \
+					"${dlKeys[$selIdx]}" \
+					"${dlTypes[$selIdx]}" \
+					"${dlURLs[$selIdx]}" \
+					"${dlLabels[$selIdx]}"
+			fi
+			;;
+
+		esac
+
+	done
 
 }
 
@@ -616,8 +1819,8 @@ add_menu_main () {
 						"${!dispNameVar}"
 					;;
 
-				"CREATE_INSTALL_MEDIA_YOS" )
-					add_mas_createinstallmedia_yos \
+				"CREATE_INSTALL_MEDIA_MAV" )
+					add_mas_createinstallmedia_mav \
 						"${!appPathVar}" \
 						"${!buildNumVar}" \
 						"${!newImageVolSizeVar}" \
@@ -715,7 +1918,7 @@ download_sync_conf () {
 		conf_version_newer "$dlVer" "$confVer" || continue
 
 		# Update makedrive.conf using awk literal-string substitution.
-		# lsub() does a plain index()-based replace — no regex metacharacter
+		# lsub() does a plain index()-based replace - no regex metacharacter
 		# risk from dots in version strings (e.g. "26.5.1").
 		# Output is staged to a temp file in the same directory, then
 		# renamed into place atomically so a partial write never corrupts
@@ -775,7 +1978,7 @@ END { print n+0 }
 # ------------------------------------------------------------------------------
 # startup_sync_versions
 # Runs at launch before the main menu. Fetches a lightweight catalog from
-# Apple's servers (version and build only — no package URLs), compares each
+# Apple's servers (version and build only - no package URLs), compares each
 # major-version slot against makedrive.conf, and calls download_sync_conf in
 # quiet mode to update the conf in-place when newer minor releases exist.
 # Sets makeDriveSyncNotice (read by main_menu) if any updates were applied.
@@ -832,7 +2035,7 @@ if not products:
 
 # A product is a full macOS installer iff its ExtendedMetaInfo carries
 # InstallAssistantPackageIdentifiers. Collect each one's English distribution
-# URL — that small XML file holds the human-readable version and build strings.
+# URL - that small XML file holds the human-readable version and build strings.
 dist_urls = [
     prod["Distributions"]["English"]
     for prod in products.values()
@@ -855,10 +2058,22 @@ def parse_ver(v):
     except Exception:
         return (0,)
 
+def parse_build(b):
+    # See matching comment in download_installer_menu's copy of this
+    # function - plain string comparison of build numbers is wrong
+    # ("19H15" < "19H4" lexically), so parse into a tuple instead.
+    m = re.match(r'^(\d+)([A-Za-z]+)(\d+)([a-zA-Z]*)$', str(b).strip())
+    if not m:
+        return (0, '', 0, '')
+    major, letter, point, suffix = m.groups()
+    return (int(major), letter, int(point), suffix)
+
 # Distribution files are fetched concurrently. Keep only the newest version and
 # build for each macOS generation (keyed by major, or "10.x" for the 10 line).
-# Versions before 10.13 and the nonexistent 16–25 range (Apple jumped 15 → 26)
-# are dropped as catalog noise.
+# Versions before 10.13 and the nonexistent 16-25 range (Apple jumped 15 → 26)
+# are dropped as catalog noise. Multiple products can share the same VERSION
+# string across supplemental updates (e.g. 19H2/19H4/19H15 all "10.15.7"), so
+# build must be compared too - see matching comment in download_installer_menu.
 newest = {}
 with ThreadPoolExecutor(max_workers=15) as ex:
     for fut in as_completed([ex.submit(get_version_build, u) for u in dist_urls]):
@@ -869,8 +2084,9 @@ with ThreadPoolExecutor(max_workers=15) as ex:
         if (p[0] == 10 and (len(p) < 2 or p[1] < 13)) or 16 <= p[0] <= 25:
             continue
         key = "10." + str(p[1]) if p[0] == 10 and len(p) > 1 else str(p[0])
-        if key not in newest or p > parse_ver(newest[key]["version"]):
-            newest[key] = {"version": version, "build": build}
+        sortKey = (p, parse_build(build))
+        if key not in newest or sortKey > newest[key]["_sortKey"]:
+            newest[key] = {"version": version, "build": build, "_sortKey": sortKey}
 
 # Emit newest generation first as shell-sourceable assignments.
 final = sorted(newest.values(), key=lambda e: parse_ver(e["version"]), reverse=True)
@@ -922,7 +2138,7 @@ build_ask_to_copy_datadrive () {
 		
 		disp_print_header
 
-		# DataDrive Only (type 12) always copies the data partition — it's the
+		# DataDrive Only (type 12) always copies the data partition - it's the
 		# entire point of that build type, so skip the prompt.
 		if [ "$diskType" == "12" ]; then
 			okToCopyData="Y"
@@ -1128,47 +2344,47 @@ deploy_restore_and_configure () {
 	fi
 	echo ""
 
-	# Close the Finder window opened by INST-A DMGs before rename
-	if [ "$deployType" = "INST-A" ]; then
-		sleep "$windowCloseSleepInSeconds"
-		osascript -e "tell application \"Finder\" to close Finder window \"$asrName\""
-	fi
-
 	# Rename to final name (INST-A only; GENERIC images already carry finalName)
 	if [ "$asrName" != "$finalName" ]; then
-		diskutil rename "/Volumes/$asrName" "$finalName"
-		if [ "$?" != "0" ] && [ "$hadError" = "0" ]; then
+		if ! diskutil rename "/Volumes/$asrName" "$finalName" && [ "$hadError" = "0" ]; then
 			lastBuildError="Could not rename $asrName to $finalName."
 			hadError=1
 			echo "Warning: volume rename failed for $asrName. Drive may not be fully set up."
 		fi
 	fi
 
-	# Bless volume for boot capability
-	case "$deployType" in
+	# Bless volume for boot capability.
+	local coreServices="/Volumes/$finalName/System/Library/CoreServices"
+	if ! bless -folder "$coreServices" -label "$finalName"; then
+		[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
+		hadError=1
+		echo "Warning: bless failed for $finalName. Volume may not be bootable."
+	fi
 
-		INST-A )
-			mkdir "/Volumes/$finalName/.dummy"
-			if ! bless -folder "/Volumes/$finalName/System/Library/CoreServices" \
-			           -openfolder "/Volumes/$finalName/.dummy" \
-			           -label "$finalName"; then
-				[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
-				hadError=1
-				echo "Warning: bless failed for $finalName. Volume may not be bootable."
-			fi
-			rm -d "/Volumes/$finalName/.dummy"
-			;;
+	# Some older installers (confirmed 10.9) carry a separate .IABootFiles
+	# folder at the volume root - a self-contained legacy boot environment
+	# (its own boot.efi, kernelcache, Boot.plist) that Apple's
+	# createinstallmedia blesses as the actual active boot target instead of
+	# CoreServices (confirmed via `bless --info`: "Blessed System Folder is
+	# .../.IABootFiles"). Blessing CoreServices above does not change that -
+	# the firmware reads the label from whichever folder is actually blessed,
+	# and for these volumes that is .IABootFiles, still carrying Apple's
+	# original (not $finalName) label. Re-blessing it directly here makes
+	# bless regenerate its label using $finalName, the same way it already
+	# does correctly for CoreServices on volumes that lack this folder. We
+	# never create this folder ourselves - only re-bless it if already present.
+	local iaBootFiles="/Volumes/$finalName/.IABootFiles"
+	if [ -d "$iaBootFiles" ]; then
+		bless -folder "$iaBootFiles" -label "$finalName" 2>/dev/null
+	fi
 
-		* )
-			if ! bless -folder "/Volumes/$finalName/System/Library/CoreServices" \
-			           -label "$finalName"; then
-				[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
-				hadError=1
-				echo "Warning: bless failed for $finalName. Volume may not be bootable."
-			fi
-			;;
-
-	esac
+	# Copy datefix script to the root of 10.7-10.9 installer volumes so it can
+	# be run from the installer's Terminal to work around expired installer
+	# signing certificates that Apple has not re-issued.
+	if [[ "$finalName" =~ ^10\.[789]\. ]] && [ -n "${datefix_script:-}" ]; then
+		printf '%s' "$datefix_script" > "/Volumes/$finalName/datefix"
+		chmod 755 "/Volumes/$finalName/datefix"
+	fi
 
 	# Disable Spotlight on target volume
 	echo "Disabling Spotlight on target volume."
@@ -1226,8 +2442,7 @@ build_deploy_volume () {
 				echo ""
 			fi
 
-			diskutil rename "/Volumes/$dataDriveStartName" "$dataDriveFinalName"
-			if [ "$?" != "0" ] && [ "$deployError" = "0" ]; then
+			if ! diskutil rename "/Volumes/$dataDriveStartName" "$dataDriveFinalName" && [ "$deployError" = "0" ]; then
 				lastBuildError="Could not rename the DataDrive partition."
 				deployError=1
 			fi
@@ -1524,7 +2739,7 @@ quick_deploy_menu_choose_image () {
 # ------------------------------------------------------------------------------
 # quick_deploy_format_disk
 # Formats target disk with a single partition for deployment.
-# GPT is always used — quick deploy targets modern USB/SD media.
+# GPT is always used - quick deploy targets modern USB/SD media.
 #
 # $1 - Disk number to partition
 # $2 - Volume name for the partition
@@ -1557,7 +2772,7 @@ quick_deploy_format_disk () {
 # quick_deploy_start
 # Main loop for restoring a single image to a USB drive or SD card.
 # Loads conf vars for the chosen image key and calls deploy_restore_and_configure
-# directly — no DataDrive copy, no multi-volume iteration.
+# directly - no DataDrive copy, no multi-volume iteration.
 # ------------------------------------------------------------------------------
 quick_deploy_start () {
 
@@ -1653,7 +2868,6 @@ quick_deploy_start () {
 check_file_presence () {
 
 	local missingDMGs=""
-	local tempDMGholding=""
 	local imagePresenceCounter
 
 	# Run the loop through the imageFilePaths array until there are no more
@@ -1866,17 +3080,19 @@ main_menu () {
 
 		echo "Welcome to makedrive's Main Menu."
 		echo ""
-		echo -e "\033[1m1. Add installers to the restorekit folder\033[0m"
+		echo -e "\033[1m1. Add installer from local file\033[0m"
 		echo ""
-		echo -e "\033[1m2. Compress and scan DMGs for restore\033[0m"
+		echo -e "\033[1m2. Download installer from Apple\033[0m"
 		echo ""
-		echo -e "\033[1m3. Build your install drive\033[0m"
+		echo -e "\033[1m3. Compress and scan DMGs for restore\033[0m"
 		echo ""
-		echo -e "\033[1m4. Restore image to USB or SD card\033[0m"
+		echo -e "\033[1m4. Build your install drive\033[0m"
 		echo ""
-		echo -e "\033[1m5. Configure Pushover notifications\033[0m"
+		echo -e "\033[1m5. Restore image to USB or SD card\033[0m"
 		echo ""
-		echo -e "\033[1m6. Uninstall makedrive from this Mac\033[0m"
+		echo -e "\033[1m6. Configure Pushover notifications\033[0m"
+		echo ""
+		echo -e "\033[1m7. Uninstall makedrive from this Mac\033[0m"
 		echo ""
 		echo -e "\033[1mX. Exit makedrive\033[0m"
 		echo ""
@@ -1891,23 +3107,27 @@ main_menu () {
 			;;
 
 		2 )
-			process_check_dmgs
+			download_installer_menu
 			;;
 
 		3 )
+			process_check_dmgs
+			;;
+
+		4 )
 			doDrive=Y
 			build_drives_start
 			;;
 
-		4 )
+		5 )
 			quick_deploy_start
 			;;
 
-		5 )
+		6 )
 			notify_pushover_setup
 			;;
 
-		6 )
+		7 )
 			makedrive_uninstall
 			;;
 
@@ -1929,15 +3149,15 @@ main_menu () {
 
 # ------------------------------------------------------------------------------
 # notify_pushover_read_userkey / notify_pushover_read_apptoken
-# Read a single Pushover credential from the System Keychain and print it to
-# stdout. Returns an empty string silently when the credential is not present.
+# Read a single Pushover credential from the user's login keychain and print it
+# to stdout. Returns an empty string silently when the credential is not present.
 # ------------------------------------------------------------------------------
 notify_pushover_read_userkey () {
 	security find-generic-password \
 		-s "makedrive-pushover-userkey" \
 		-a "makedrive" \
 		-w \
-		/Library/Keychains/System.keychain 2>/dev/null
+		"$makedrivePushoverKeychain" 2>/dev/null
 }
 
 notify_pushover_read_apptoken () {
@@ -1945,7 +3165,7 @@ notify_pushover_read_apptoken () {
 		-s "makedrive-pushover-apptoken" \
 		-a "makedrive" \
 		-w \
-		/Library/Keychains/System.keychain 2>/dev/null
+		"$makedrivePushoverKeychain" 2>/dev/null
 }
 
 
@@ -1957,18 +3177,18 @@ notify_pushover_delete_credentials () {
 	security delete-generic-password \
 		-s "makedrive-pushover-userkey" \
 		-a "makedrive" \
-		/Library/Keychains/System.keychain 2>/dev/null
+		"$makedrivePushoverKeychain" >/dev/null 2>&1
 	security delete-generic-password \
 		-s "makedrive-pushover-apptoken" \
 		-a "makedrive" \
-		/Library/Keychains/System.keychain 2>/dev/null
+		"$makedrivePushoverKeychain" >/dev/null 2>&1
 }
 
 
 # ------------------------------------------------------------------------------
 # notify_pushover_remove
 # Confirms intent then permanently removes Pushover credentials from the
-# System Keychain. makedrive will no longer send notifications after removal.
+# user's login keychain. makedrive will no longer send notifications after removal.
 # ------------------------------------------------------------------------------
 notify_pushover_remove () {
 
@@ -1976,8 +3196,8 @@ notify_pushover_remove () {
 
 	echo "Remove Pushover Credentials"
 	echo ""
-	echo "This will permanently remove your Pushover credentials from the System"
-	echo "Keychain. makedrive will no longer send Pushover notifications."
+	echo "This will permanently remove your Pushover credentials from your login"
+	echo "keychain. makedrive will no longer send Pushover notifications."
 	echo ""
 	printf "Are you sure you want to remove Pushover credentials? Y/N: "
 	read -r confirmRemove
@@ -1986,7 +3206,7 @@ notify_pushover_remove () {
 	if [ "$confirmRemove" = "Y" ] || [ "$confirmRemove" = "y" ]; then
 
 		notify_pushover_delete_credentials
-		echo "Pushover credentials removed from the System Keychain."
+		echo "Pushover credentials removed from your login keychain."
 		echo "makedrive will no longer send Pushover notifications."
 
 	else
@@ -2003,7 +3223,7 @@ notify_pushover_remove () {
 # makedrive_uninstall
 # Permanently removes all makedrive components from this Mac: the Application
 # Support folder (including makedrive.conf), Pushover credentials from the
-# System Keychain, and the script file itself. Prompts the user to type
+# user's login keychain, and the script file itself. Prompts the user to type
 # UNINSTALL to confirm before taking any action.
 # ------------------------------------------------------------------------------
 makedrive_uninstall () {
@@ -2020,7 +3240,7 @@ makedrive_uninstall () {
 	echo "This will permanently remove the following from this Mac:"
 	echo ""
 	echo "  * $makedriveSupportDir"
-	echo "  * Pushover credentials from the System Keychain (if present)"
+	echo "  * Pushover credentials from your login keychain (if present)"
 	echo "  * $scriptPath"
 	echo ""
 	echo "Type UNINSTALL and press return to confirm, or press return to cancel."
@@ -2044,9 +3264,9 @@ makedrive_uninstall () {
 	fi
 
 	if security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
-			/Library/Keychains/System.keychain &>/dev/null; then
+			-w "$makedrivePushoverKeychain" >/dev/null 2>&1; then
 		notify_pushover_delete_credentials
-		echo "  Pushover credentials removed from the System Keychain."
+		echo "  Pushover credentials removed from login keychain."
 	fi
 
 	rm -f "$makedriveLockFile"
@@ -2070,7 +3290,7 @@ makedrive_uninstall () {
 
 # ------------------------------------------------------------------------------
 # notify_pushover_send
-# Sends a Pushover notification using credentials stored in the System Keychain.
+# Sends a Pushover notification using credentials stored in the user's login keychain.
 # Returns silently if credentials are not configured or the send fails.
 #
 # $1 - Message text to send
@@ -2133,7 +3353,7 @@ notify_pushover_setup () {
 			echo "You will need your Pushover User Key and an Application API Token."
 			echo "Both are available from your account at pushover.net."
 			echo ""
-			echo "Credentials will be stored in the System Keychain on this Mac."
+			echo "Credentials will be stored in your login keychain."
 			echo ""
 
 			local userKey appToken
@@ -2148,7 +3368,7 @@ notify_pushover_setup () {
 			echo ""
 
 			if [ -z "$userKey" ] || [ -z "$appToken" ]; then
-				echo "Setup cancelled — both a User Key and App Token are required."
+				echo "Setup cancelled - both a User Key and App Token are required."
 			else
 
 				local saveUserKeyResult saveAppTokenResult
@@ -2158,7 +3378,7 @@ notify_pushover_setup () {
 					-a "makedrive" \
 					-w "$userKey" \
 					-U \
-					/Library/Keychains/System.keychain
+					"$makedrivePushoverKeychain"
 				saveUserKeyResult=$?
 
 				security add-generic-password \
@@ -2166,15 +3386,15 @@ notify_pushover_setup () {
 					-a "makedrive" \
 					-w "$appToken" \
 					-U \
-					/Library/Keychains/System.keychain
+					"$makedrivePushoverKeychain"
 				saveAppTokenResult=$?
 
 				userKey=""; appToken=""
 
 				if [ "$saveUserKeyResult" = "0" ] && [ "$saveAppTokenResult" = "0" ]; then
-					echo "Pushover credentials saved to the System Keychain."
+					echo "Pushover credentials saved to your login keychain."
 					echo ""
-					echo "To verify or remove them, open Keychain Access, select the System"
+					echo "To verify or remove them, open Keychain Access, select your login"
 					echo "keychain, and search for 'makedrive-pushover'."
 					echo ""
 					printf "Would you like to send a test notification now? Y/N: "
@@ -2224,7 +3444,7 @@ notify_pushover_setup () {
 
 # ------------------------------------------------------------------------------
 # notify_pushover_test
-# Fetches credentials from the System Keychain and sends a visible test
+# Fetches credentials from the user's login keychain and sends a visible test
 # notification, reporting the HTTP result so the user can confirm correct setup.
 # ------------------------------------------------------------------------------
 notify_pushover_test () {
@@ -2250,7 +3470,7 @@ notify_pushover_test () {
 		--write-out "%{http_code}" \
 		--form-string "token=${appToken}" \
 		--form-string "user=${userKey}" \
-		--form-string "message=makedrive: Test notification — Pushover is configured correctly." \
+		--form-string "message=makedrive: Test notification - Pushover is configured correctly." \
 		"https://api.pushover.net/1/messages.json" 2>/dev/null)
 
 	if [ "$testStatus" = "200" ]; then
@@ -2486,15 +3706,57 @@ migrate_conf_file () {
 
 
 # ------------------------------------------------------------------------------
-# preflight_check_xcode_cli_tools
-# makedrive depends on two tools from the Xcode Command Line Tools: setfile
-# (assigns custom volume icons to DMGs) and python3 (fetches macOS version data
-# in startup_sync_versions). This runs before the version sync so a missing
-# toolchain is resolved up front rather than failing partway through. If the
-# tools are absent the user is offered Apple's installer, then makedrive exits.
+# migrate_pushover_credentials
+# One-time migration of Pushover credentials from the legacy System Keychain to
+# the invoking user's login keychain. Skipped silently if nothing is in the
+# System Keychain or if credentials are already present in the login keychain.
 # ------------------------------------------------------------------------------
-preflight_check_xcode_cli_tools () {
+migrate_pushover_credentials () {
 
+	local sysKeychain="/Library/Keychains/System.keychain"
+
+	# Nothing to migrate if System Keychain has no makedrive credentials
+	security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		-w "$sysKeychain" >/dev/null 2>&1 || return 0
+
+	# Already migrated - don't overwrite existing login keychain credentials
+	security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		-w "$makedrivePushoverKeychain" >/dev/null 2>&1 && return 0
+
+	local oldUserKey oldAppToken
+	oldUserKey=$(security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		-w "$sysKeychain" 2>/dev/null)
+	oldAppToken=$(security find-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+		-w "$sysKeychain" 2>/dev/null)
+
+	[ -z "$oldUserKey" ] || [ -z "$oldAppToken" ] && return 0
+
+	security add-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		-w "$oldUserKey" -U "$makedrivePushoverKeychain" 2>/dev/null
+	security add-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+		-w "$oldAppToken" -U "$makedrivePushoverKeychain" 2>/dev/null
+
+	security delete-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		"$sysKeychain" >/dev/null 2>&1
+	security delete-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+		"$sysKeychain" >/dev/null 2>&1
+
+	oldUserKey=""; oldAppToken=""
+
+}
+
+
+# ------------------------------------------------------------------------------
+# preflight_check_dependencies
+# Verifies required tools and libraries are installed:
+#   - Xcode Command Line Tools (setfile for volume icons, python3 for catalog checks)
+#   - PIL/Pillow (for icon normalization on pre-2013 EFI boot pickers)
+# If Xcode tools are missing, user is offered Apple's installer and makedrive exits.
+# If PIL installation fails, icons still work - just may not appear on older Macs.
+# ------------------------------------------------------------------------------
+preflight_check_dependencies () {
+
+	# Check Xcode CLI Tools
 	if ! xcode-select -p &>/dev/null; then
 
 		disp_print_header
@@ -2530,7 +3792,24 @@ preflight_check_xcode_cli_tools () {
 		echo ""
 	fi
 
+	# Check PIL (after Xcode tools, so python3 is available)
+	python3 -c "from PIL import Image" 2>/dev/null && return 0
+
+	echo "Installing PIL (Pillow) for icon normalization..."
+	echo "(This is needed for boot picker compatibility on pre-2013 Macs.)"
+	echo ""
+
+	if python3 -m pip install -q pillow 2>/dev/null; then
+		echo "PIL installed successfully."
+		echo ""
+	else
+		echo "Warning: PIL installation failed. Icons will still work,"
+		echo "but may not appear in EFI boot pickers on older Macs."
+		echo ""
+	fi
+
 }
+
 # ------------------------------------------------------------------------------
 # preflight_get_boot_device
 # Sets $bootDiskID to the whole-disk number(s) backing the running system, with
@@ -2548,7 +3827,7 @@ preflight_get_boot_device () {
 
         # Apple Silicon: derive the boot disk(s) from the root volume. An APFS
         # system volume lives on a synthesized container (Part of Whole) that is
-        # itself backed by a physical store (APFS Physical Store) — erasing
+        # itself backed by a physical store (APFS Physical Store) - erasing
         # either would destroy the boot OS, so both numbers are protected.
         local bootInfo parentWhole physStore diskNumCandidate
         bootInfo=$(diskutil info / 2>/dev/null)
@@ -2756,19 +4035,25 @@ process_check_dmgs () {
 
 trap postflight_cleanup SIGINT SIGTERM
 
-# Get execution path first — makedrive.conf uses $executionPath to resolve
+# Get execution path first - makedrive.conf uses $executionPath to resolve
 # paths to restorekit image files.
 preflight_get_execution_path
 
 # Source makedrive.conf from whichever location is available. A conf alongside
-# the script takes priority over Application Support so that distributed updates
-# are picked up on the very first run even before root is obtained.
+# the script takes priority over the user Application Support path so that
+# distributed updates are picked up on the very first run even before root is
+# obtained. The legacy system-wide path (/Library/Application Support/makedrive)
+# is checked last as a one-time upgrade fallback for pre-Build 202 installs.
+_makedrive_legacy_conf="/Library/Application Support/makedrive/makedrive.conf"
 if [ -f "$executionPath/makedrive.conf" ]; then
 	# shellcheck source=/dev/null
 	. "$executionPath/makedrive.conf"
 elif [ -f "$makedriveSupportConf" ]; then
 	# shellcheck source=/dev/null
 	. "$makedriveSupportConf"
+elif [ -f "$_makedrive_legacy_conf" ]; then
+	# shellcheck source=/dev/null
+	. "$_makedrive_legacy_conf"
 else
 	echo "makedrive configuration file not found."
 	echo "Place makedrive.conf alongside makedrive.command and re-run to install it."
@@ -2781,15 +4066,26 @@ preflight_check_for_restorekit
 preflight_get_boot_device
 preflight_check_instance
 preflight_check_root
-preflight_check_xcode_cli_tools
+preflight_check_dependencies
 
-# Migrate makedrive.conf to Application Support now that root is established.
-# A conf alongside the script replaces the one in Application Support, making
-# this the natural update path: ship a new conf with a new script release and
-# the first root run installs it. Old confs are archived with timestamps.
+# Migrate makedrive.conf to the user Application Support path now that root is
+# established. A conf alongside the script replaces the one in Application
+# Support (natural update path). A conf still at the legacy system-wide location
+# is migrated once to the new user path on the first run after upgrade.
+# Old confs are archived with timestamps by migrate_conf_file.
 if [ -f "$executionPath/makedrive.conf" ]; then
 	migrate_conf_file "$executionPath/makedrive.conf" "$makedriveSupportConf" "$makedriveSupportDir"
+elif [ -f "$_makedrive_legacy_conf" ] && [ ! -f "$makedriveSupportConf" ]; then
+	migrate_conf_file "$_makedrive_legacy_conf" "$makedriveSupportConf" "$makedriveSupportDir"
 fi
+unset _makedrive_legacy_conf
+
+# Ensure the support directory and its contents are owned by the invoking user
+# so makedrive.conf can be edited without elevated privileges. makedrive runs as
+# root, so files it creates here are root-owned by default.
+[ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$makedriveSupportDir"
+
+migrate_pushover_credentials
 
 startup_sync_versions
 
