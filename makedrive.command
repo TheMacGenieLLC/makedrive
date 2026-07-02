@@ -49,8 +49,6 @@ unset _makedrive_userhome
 # Image definitions, imageFilePaths, and build type configurations are
 # loaded from makedrive.conf at startup.
 
-declare -a imagesNeedingCompression
-declare -a imagesNeedingScan
 declare -a imagesThatFailedCompression
 declare -a imagesThatFailedScan
 
@@ -298,7 +296,7 @@ add_copy_single_dmg () {
 	# testDevice is a local variable that is set to the device ID of the mounted
 	# disk image.  Since we need to mount the image with its own name to verify
 	# if it is correct, we need the device ID to properly unmount. 
-	testDevice=$(hdiutil attach "$imagePathToAdd" -nobrowse -noverify -readonly | head -n 1 | awk '{print $1}')
+	IFS=$'\t' read -r testDevice _ < <(dmgtool_attach_parse "$imagePathToAdd" -readonly)
 
 	if [ -z "$testDevice" ]; then
 		disp_print_header
@@ -374,9 +372,7 @@ add_copy_single_dmg () {
 			local iconMergedDmg="$makedriveScratchDir/makedrive-icon-merged.dmg"
 			local iconMount="" iconApplied="N"
 			rm -f "$iconShadow"
-			iconMount=$(hdiutil attach "$2" -shadow "$iconShadow" \
-			    -nobrowse -noverify 2>/dev/null \
-			    | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+			IFS=$'\t' read -r _ iconMount < <(dmgtool_attach_parse "$2" -shadow "$iconShadow")
 			if [ -n "$iconMount" ]; then
 				local applySrc="$iconSource"
 				[ -z "$applySrc" ] && applySrc=$(find "$iconMount" -type d -maxdepth 2 \
@@ -543,10 +539,8 @@ read_installer_build () {
 
 	# New-format (11+): build is inside SharedSupport.dmg.
 	if [ -f "$ssDmg" ]; then
-		local ssAttach ssDevice ssMountPoint
-		ssAttach=$(hdiutil attach -noverify -nobrowse -readonly "$ssDmg" 2>/dev/null)
-		ssDevice=$(echo "$ssAttach"     | awk 'NR==1{print $1}')
-		ssMountPoint=$(echo "$ssAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+		local ssDevice ssMountPoint
+		IFS=$'\t' read -r ssDevice ssMountPoint < <(dmgtool_attach_parse "$ssDmg" -readonly)
 		if [ -n "$ssDevice" ]; then
 			build=$(plutil -extract "Assets.0.Build" raw -o - \
 			    "${ssMountPoint}/com_apple_MobileAsset_MacSoftwareUpdate/com_apple_MobileAsset_MacSoftwareUpdate.xml" \
@@ -565,18 +559,14 @@ read_installer_build () {
 		if [ -f "$directBase" ]; then
 			baseDmg="$directBase"
 		else
-			local esdAttach esdMountPoint
-			esdAttach=$(hdiutil attach -noverify -nobrowse -readonly "$esdDmg" 2>/dev/null)
-			esdDevice=$(echo "$esdAttach"     | awk 'NR==1{print $1}')
-			esdMountPoint=$(echo "$esdAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+			local esdMountPoint
+			IFS=$'\t' read -r esdDevice esdMountPoint < <(dmgtool_attach_parse "$esdDmg" -readonly)
 			[ -n "$esdMountPoint" ] && baseDmg="${esdMountPoint}/BaseSystem.dmg"
 		fi
 
 		if [ -n "$baseDmg" ] && [ -f "$baseDmg" ]; then
-			local baseAttach baseDevice baseMountPoint
-			baseAttach=$(hdiutil attach -noverify -nobrowse -readonly "$baseDmg" 2>/dev/null)
-			baseDevice=$(echo "$baseAttach"     | awk 'NR==1{print $1}')
-			baseMountPoint=$(echo "$baseAttach" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+			local baseDevice baseMountPoint
+			IFS=$'\t' read -r baseDevice baseMountPoint < <(dmgtool_attach_parse "$baseDmg" -readonly)
 			if [ -n "$baseDevice" ]; then
 				build=$(plutil -extract "ProductBuildVersion" raw -o - \
 				    "${baseMountPoint}/System/Library/CoreServices/SystemVersion.plist" \
@@ -661,6 +651,38 @@ add_mas_build_mismatch () {
 
 
 # ------------------------------------------------------------------------------
+# add_resign_installer_bundle
+# Ad-hoc re-signs every executable file inside an installer bundle, then the
+# bundle itself. On Golden Gate and later, AMFI validates any binary marked
+# as a platform binary via trust cache - a per-OS-build whitelist of
+# Apple-shipped hashes. Old installer bundles contain many such binaries
+# (createinstallmedia, framework dylibs, nested helper daemons) that are
+# absent from newer trust caches. codesign --deep recurses only into bundle
+# containers, silently skipping standalone Mach-O executables in any
+# Resources directory. Signing by file path strips the platform claim from
+# each binary directly, replacing it with a locally trusted ad-hoc signature
+# that bypasses the trust cache check. All exec-bit files are signed first so
+# the outer bundle seal reflects their updated hashes.
+#
+# $1 - Path to the installer application bundle
+# ------------------------------------------------------------------------------
+add_resign_installer_bundle () {
+
+	local _rsBin
+
+	echo "Re-signing installer binaries..."
+	while IFS= read -r -d '' _rsBin; do
+		codesign -f -s - "$_rsBin" 2>/dev/null
+	done < <(find "$1" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0)
+
+	echo "Re-signing installer bundle..."
+	codesign -f -s - "$1" 2>/dev/null
+	echo ""
+
+}
+
+
+# ------------------------------------------------------------------------------
 # add_mas_createinstallmedia_impl
 # Shared implementation for both createinstallmedia wrapper functions below.
 # $7 = "mav" selects the --applicationpath path with codesign workarounds
@@ -721,24 +743,9 @@ add_mas_createinstallmedia_impl () {
 
 	if [ "$7" = "mav" ]; then
 
-		# On Golden Gate and later, AMFI validates any binary marked as a platform
-		# binary via trust cache - a per-OS-build whitelist of Apple-shipped hashes.
-		# Old installer bundles contain many such binaries (createinstallmedia,
-		# framework dylibs, nested helper daemons) that are absent from newer trust
-		# caches. codesign --deep recurses only into bundle containers, silently
-		# skipping standalone Mach-O executables in any Resources directory.
-		# Signing by file path strips the platform claim from each binary directly,
-		# replacing it with a locally trusted ad-hoc signature that bypasses the
-		# trust cache check. Sign all exec-bit files first so the outer bundle seal
-		# reflects their updated hashes.
-		echo "Re-signing installer binaries..."
-		local _rsBin
-		while IFS= read -r -d '' _rsBin; do
-			codesign -f -s - "$_rsBin" 2>/dev/null
-		done < <(find "$1" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0)
-		echo "Re-signing installer bundle..."
-		codesign -f -s - "$1" 2>/dev/null
-		echo ""
+		# Old installer bundles carry platform binaries missing from newer
+		# trust caches; see add_resign_installer_bundle for the mechanics.
+		add_resign_installer_bundle "$1"
 
 		# Apple shipped a Sierra installer where CFBundleShortVersionString in
 		# Info.plist does not match the version createinstallmedia was built to
@@ -787,14 +794,7 @@ add_mas_createinstallmedia_impl () {
 		# real risk since Reduced Security still enforces identity requirements
 		# that ad-hoc signatures do not satisfy.
 		case "$2" in 18*|19*)
-			echo "Re-signing installer binaries..."
-			local _rsBin
-			while IFS= read -r -d '' _rsBin; do
-				codesign -f -s - "$_rsBin" 2>/dev/null
-			done < <(find "$1" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0)
-			echo "Re-signing installer bundle..."
-			codesign -f -s - "$1" 2>/dev/null
-			echo ""
+			add_resign_installer_bundle "$1"
 			;;
 		esac
 
@@ -954,6 +954,20 @@ add_installer_from_pkg () {
 	# pre-extraction check; empty if the name carries no version-shaped token.
 	expectedVer=$(printf '%s' "$2" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
 
+	# Shared failure exit used throughout: print each message line, clean up
+	# the expansion staging and any mounted source DMG, and pause. Callers
+	# still return 1 themselves so control flow stays visible at each site.
+	_pkg_fail () {
+		local _failLine
+		for _failLine in "$@"; do
+			echo "$_failLine"
+		done
+		echo ""
+		rm -rf "$expandDir"
+		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
+		disp_pause_for_input
+	}
+
 	if [ -n "$suppliedPath" ]; then
 
 		pkgPath="$suppliedPath"
@@ -977,10 +991,7 @@ add_installer_from_pkg () {
 		fi
 
 		if [ ! -f "$pkgPath" ]; then
-			echo ""
-			echo "File not found. Verify the path and try again."
-			echo ""
-			disp_pause_for_input
+			_pkg_fail "" "File not found. Verify the path and try again."
 			return 1
 		fi
 
@@ -992,23 +1003,15 @@ add_installer_from_pkg () {
 		disp_print_header
 		echo "Mounting installer disk image..."
 		echo ""
-		local _dmgOut _dmgMount
-		_dmgOut=$(hdiutil attach -nobrowse -readonly -noverify "$pkgPath" 2>/dev/null)
-		_dmgDevice=$(printf '%s' "$_dmgOut" | awk 'NR==1{print $1}')
-		_dmgMount=$(printf '%s' "$_dmgOut" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')
+		local _dmgMount
+		IFS=$'\t' read -r _dmgDevice _dmgMount < <(dmgtool_attach_parse "$pkgPath" -readonly)
 		if [ -z "$_dmgDevice" ] || [ -z "$_dmgMount" ]; then
-			echo "Could not mount the disk image. Verify the file and try again."
-			echo ""
-			disp_pause_for_input
+			_pkg_fail "Could not mount the disk image. Verify the file and try again."
 			return 1
 		fi
 		pkgPath=$(find "$_dmgMount" -maxdepth 1 -name "*.pkg" -type f | head -1)
 		if [ -z "$pkgPath" ]; then
-			echo "No installer package found on the disk image."
-			echo ""
-			hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-			_dmgDevice=""
-			disp_pause_for_input
+			_pkg_fail "No installer package found on the disk image."
 			return 1
 		fi
 		;;
@@ -1020,10 +1023,7 @@ add_installer_from_pkg () {
 	# Both the ESD and the thin Payload live side by side under that directory.
 	esdMember=$(xar -tf "$pkgPath" 2>/dev/null | grep -m1 '/InstallESD.dmg$')
 	if [ -z "$esdMember" ]; then
-		echo "This does not look like a macOS installer package (no InstallESD.dmg)."
-		echo ""
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "This does not look like a macOS installer package (no InstallESD.dmg)."
 		return 1
 	fi
 	compDir="${esdMember%/InstallESD.dmg}"
@@ -1036,20 +1036,12 @@ add_installer_from_pkg () {
 	# Extract only the thin Payload first (a few MB) so the package version can
 	# be checked before committing to the multi-GB InstallESD.dmg extraction.
 	if ! xar -x -C "$expandDir" -f "$pkgPath" "$compDir/Payload" 2>/dev/null; then
-		echo "Could not read the package. Verify the file and try again."
-		echo ""
-		rm -rf "$expandDir"
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "Could not read the package. Verify the file and try again."
 		return 1
 	fi
 	payloadPath="$expandDir/$compDir/Payload"
 	if [ ! -f "$payloadPath" ]; then
-		echo "Unexpected package structure: Payload not found."
-		echo ""
-		rm -rf "$expandDir"
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "Unexpected package structure: Payload not found."
 		return 1
 	fi
 
@@ -1058,11 +1050,7 @@ add_installer_from_pkg () {
 	bsdtar -C "$stageApp" -xf "$payloadPath" 2>/dev/null
 	stagedAppDir=$(find "$stageApp" -maxdepth 1 -name "*.app" | head -1)
 	if [ -z "$stagedAppDir" ]; then
-		echo "Could not extract the installer application from the package."
-		echo ""
-		rm -rf "$expandDir"
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "Could not extract the installer application from the package."
 		return 1
 	fi
 
@@ -1073,12 +1061,8 @@ add_installer_from_pkg () {
 	pkgVer=$(plutil -extract "System Image Info.version" raw -o - "$instInfo" 2>/dev/null)
 	if [ -n "$expectedVer" ] && [ -n "$pkgVer" ] && \
 	   [ "$(printf '%s' "$expectedVer" | cut -d. -f1-2)" != "$(printf '%s' "$pkgVer" | cut -d. -f1-2)" ]; then
-		echo "This package is for macOS $pkgVer, but the chosen installer expects"
-		echo "macOS $expectedVer. Verify you supplied the correct package and try again."
-		echo ""
-		rm -rf "$expandDir"
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "This package is for macOS $pkgVer, but the chosen installer expects" \
+		          "macOS $expectedVer. Verify you supplied the correct package and try again."
 		return 1
 	fi
 
@@ -1086,11 +1070,7 @@ add_installer_from_pkg () {
 	echo "Extracting installer content..."
 	echo ""
 	if ! xar -x -C "$expandDir" -f "$pkgPath" "$esdMember" 2>/dev/null; then
-		echo "Could not extract the installer content. Check available disk space."
-		echo ""
-		rm -rf "$expandDir"
-		[ -n "$_dmgDevice" ] && hdiutil detach -quiet "$_dmgDevice" 2>/dev/null
-		disp_pause_for_input
+		_pkg_fail "Could not extract the installer content. Check available disk space."
 		return 1
 	fi
 
@@ -1107,9 +1087,7 @@ add_installer_from_pkg () {
 	rm -rf "$expandDir"
 
 	if [ ! -d "$appPath" ]; then
-		echo "Could not assemble the installer application."
-		echo ""
-		disp_pause_for_input
+		_pkg_fail "Could not assemble the installer application."
 		return 1
 	fi
 
@@ -2978,15 +2956,8 @@ quick_deploy_start () {
 			notify_pushover_send "An error was encountered during imaging: ${lastBuildError}"
 		fi
 
-		disp_print_header
-		echo "Completed disk is ejected."
-		echo ""
-		echo "If you want to image another drive, connect it before answering 'yes'."
-		echo ""
-		echo "Do you want to image another drive? Y/N: "
-		echo ""
-		read -r doDeploy
-		doDeploy="${doDeploy%% *}"
+		build_ask_to_run_again
+		doDeploy="$doDrive"
 
 		diskNum=""
 
@@ -3036,8 +3007,36 @@ check_file_presence () {
 
 
 # ------------------------------------------------------------------------------
+# dmgtool_attach_parse
+# Attaches a disk image with -nobrowse -noverify (plus any extra hdiutil
+# flags passed after the image path) and prints a single line:
+#   <device><TAB><mount point>
+# The device is the first-line whole-disk entry, which is what hdiutil
+# detach needs; the mount point is the last mounted-volume path, empty if
+# nothing mounted. Prints nothing and returns non-zero if the attach fails.
+# Callers split the line with: IFS=$'\t' read -r device mountPoint < <(...)
+#
+# $1   - Path to the disk image
+# $2.. - Extra hdiutil attach flags (e.g. -readonly, -shadow <file>)
+# ------------------------------------------------------------------------------
+dmgtool_attach_parse () {
+
+	local imagePath="$1"; shift
+	local attachOut
+
+	attachOut=$(hdiutil attach -nobrowse -noverify "$@" "$imagePath" 2>/dev/null) || return 1
+	[ -z "$attachOut" ] && return 1
+
+	printf '%s\t%s\n' \
+	    "$(printf '%s\n' "$attachOut" | awk 'NR==1{print $1}')" \
+	    "$(printf '%s\n' "$attachOut" | awk -F'\t' 'NF>=3{mp=$NF} END{print mp}')"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # dmgtool_compress_dmg
-# 
+#
 # $1 - Path to DMG to compress
 # $2 - If processing a batch of DMGs, the current DMG count of the batch
 # $3 - If processing a batch of DMGs, the total number of DMGs in the batch
@@ -4212,111 +4211,34 @@ preflight_get_execution_path () {
 # ------------------------------------------------------------------------------
 process_check_dmgs () {
 
-	local imageCheckCounter imageCompressCounter imageScanCounter imageFailCounter
-	local compressionPresent scanInfoPresent compressResult scanResult
+	local imageProcessCounter imageFailCounter totalImages
 
-	imagesNeedingCompression=()
 	imagesThatFailedCompression=()
-	imagesNeedingScan=()
 	imagesThatFailedScan=()
 
-	# Check all DMGs for compression info, and add any images not compressed
-	# with the configured format ($dmgCompressionString) to the array
-	for (( imageCheckCounter = 0 ; imageCheckCounter < ${#imageFilePaths[@]} ; imageCheckCounter++ )); do
+	totalImages="${#imageFilePaths[@]}"
 
-		disp_print_header
+	# dmgtool_compress_dmg and dmgtool_scan_dmg each start by checking the
+	# image and return immediately when there is nothing to do, so every
+	# present image is handed straight to both - no separate pre-scan pass,
+	# and one hdiutil imageinfo per check instead of two. Compress runs
+	# before scan for each image because conversion invalidates scan data.
+	for (( imageProcessCounter = 0 ; imageProcessCounter < totalImages ; imageProcessCounter++ )); do
 
-		echo "Checking images for compression information now..."
-		echo ""
+		[ -e "${imageFilePaths[$imageProcessCounter]}" ] || continue
 
-		[ -e "${imageFilePaths[$imageCheckCounter]}" ] || continue
-		hdiutil imageinfo "${imageFilePaths[$imageCheckCounter]}" | grep -q "$dmgCompressionString"
-		compressionPresent=$?
-	
-		# If hdiutil/grep returns not 0 (non-success, image is not correct format), then 
-		# add that image to the imagesNeedingCompression array. Otherwise, nothing
-		# happens at all and the image is OK to continue
-		if [ "$compressionPresent" != "0" ]; then
-		
-			imagesNeedingCompression+=( "${imageFilePaths[$imageCheckCounter]}" )
-		
+		if ! dmgtool_compress_dmg "${imageFilePaths[$imageProcessCounter]}" \
+			"$(( imageProcessCounter + 1 ))" "$totalImages"; then
+			imagesThatFailedCompression+=( "${imageFilePaths[$imageProcessCounter]}" )
 		fi
-	
-	done
-	
-	# If the size of the imagesNeedingCompression array is not zero, run through
-	# the array and compress all DMGs in need of compression
-	if [ "${#imagesNeedingCompression[@]}" != "0" ]; then
-		
-		for (( imageCompressCounter = 0 ; imageCompressCounter < ${#imagesNeedingCompression[@]} ; imageCompressCounter++ )); do
 
-			dmgtool_compress_dmg "${imagesNeedingCompression[$imageCompressCounter]}" \
-				"$(( imageCompressCounter + 1 ))" "${#imagesNeedingCompression[@]}"
-			compressResult=$?
-
-			# If dmgtool_compress_dmg returns not 0 (non-success, cannot scan
-			# for restore), then add that image to the imagesThatFailedCompression
-			# array. Otherwise, no action.
-
-			if [ "$compressResult" != "0" ]; then
-
-				imagesThatFailedCompression+=( "${imagesNeedingCompression[$imageCompressCounter]}" )
-
-			fi
-		
-		done
-		
-	fi
-	
-	# Now that everything has been compressed, check all DMGs for ASR scan info
-	# and add any images lacking scan data to the imagesNeedingScan array
-	for (( imageCheckCounter = 0 ; imageCheckCounter < ${#imageFilePaths[@]} ; imageCheckCounter++ )); do
-
-		disp_print_header
-
-		echo "Checking images for scan information now..."
-		echo ""
-
-		[ -e "${imageFilePaths[$imageCheckCounter]}" ] || continue
-		hdiutil imageinfo "${imageFilePaths[$imageCheckCounter]}" | grep -q --text 'CRC32'
-		scanInfoPresent=$?
-	
-		# If 2nd grep returns not 0 (non-success, no checksum is found), then 
-		# add that image to the imagesNeedingScan array. Otherwise, nothing
-		# happens at all.
-		if [ "$scanInfoPresent" != "0" ]; then
-
-			imagesNeedingScan+=( "${imageFilePaths[$imageCheckCounter]}" )
-		
+		if ! dmgtool_scan_dmg "${imageFilePaths[$imageProcessCounter]}" \
+			"$(( imageProcessCounter + 1 ))" "$totalImages"; then
+			imagesThatFailedScan+=( "${imageFilePaths[$imageProcessCounter]}" )
 		fi
-	
-		echo ""
-	
+
 	done
-	
-	# If the size of the imagesNeedingScanArray is not zero, run through the
-	# array and scan all DMGs in need of ASR scan data
-	if [ "${#imagesNeedingScan[@]}" != "0" ]; then
-		
-		for (( imageScanCounter = 0 ; imageScanCounter < ${#imagesNeedingScan[@]} ; imageScanCounter++ )); do
 
-			dmgtool_scan_dmg "${imagesNeedingScan[$imageScanCounter]}" \
-				"$(( imageScanCounter + 1 ))" "${#imagesNeedingScan[@]}"
-			scanResult=$?
-
-			# If dmgtool_scan_dmg returns not 0 (non-success, cannot scan
-			# for restore), then add that image to the imagesThatFailedScan
-			# array. Otherwise, no action.
-			if [ "$scanResult" != "0" ]; then
-	
-				imagesThatFailedScan+=( "${imagesNeedingScan[$imageScanCounter]}" )
-				
-			fi
-			
-		done
-
-	fi
-	
 	# Report success or failure as appropriate
 	disp_print_header
 	
