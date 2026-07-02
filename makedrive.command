@@ -812,7 +812,20 @@ add_mas_createinstallmedia_impl () {
 
 	dmg_apply_volume_icon "$1" "/Volumes/$endName"
 
-	diskutil rename "/Volumes/$endName" "$4"
+	# Everything from here on targets the renamed volume, so a failed rename
+	# has to stop the process rather than cascade into misdirected paths.
+	if ! diskutil rename "/Volumes/$endName" "$4"; then
+		echo ""
+		echo "Could not rename the completed installer volume /Volumes/$endName."
+		echo "It may not have mounted under the expected name. The DMG was not"
+		echo "moved into restorekit."
+		hdiutil detach -force "/Volumes/$endName" 2>/dev/null
+		[ "$7" != "mav" ] && hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
+		rm -f "$makedriveInstTmpImageFile"
+		echo ""
+		disp_pause_for_input
+		return 1
+	fi
 
 	local appPathForReceiptWipe="${1#/Applications/}"
 
@@ -1181,6 +1194,36 @@ add_mas_createinstallmedia_mav () {
 
 
 # ------------------------------------------------------------------------------
+# download_curl_interruptible
+# Downloads a single URL with Control-C scoped to cancel just this transfer.
+# The script-wide SIGINT trap (postflight_cleanup) would otherwise exit
+# makedrive outright, despite the download menus inviting Control-C as a
+# cancel key. The scoped trap only marks the interrupt; curl itself receives
+# the terminal's SIGINT directly and aborts the transfer.
+#
+# Returns curl's exit status, or 130 if the transfer was cancelled.
+#
+# $1 - URL to download
+# $2 - Output file path
+# ------------------------------------------------------------------------------
+download_curl_interruptible () {
+
+	local _dlInterrupted=0 _curlResult
+
+	trap '_dlInterrupted=1' SIGINT
+	curl --location --progress-bar --fail "$1" -o "$2" 2>&1
+	_curlResult=$?
+	trap postflight_cleanup SIGINT
+
+	if [ "$_dlInterrupted" = "1" ]; then
+		return 130
+	fi
+	return "$_curlResult"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # download_fetch_and_process
 # Downloads a macOS installer and processes it through the standard add-installer
 # pipeline. Handles three source types:
@@ -1232,9 +1275,15 @@ download_fetch_and_process () {
 		echo ""
 
 		local dmgPath="$tmpDir/installer.dmg"
-		if ! curl --location --progress-bar --fail "$dlURLs" -o "$dmgPath" 2>&1; then
+		download_curl_interruptible "$dlURLs" "$dmgPath"
+		local dlResult=$?
+		if [ "$dlResult" != "0" ]; then
 			echo ""
-			echo "Download failed. Check your network connection and try again."
+			if [ "$dlResult" = "130" ]; then
+				echo "Download cancelled."
+			else
+				echo "Download failed. Check your network connection and try again."
+			fi
 			echo ""
 			rm -rf "$tmpDir"
 			disp_pause_for_input
@@ -1258,9 +1307,15 @@ download_fetch_and_process () {
 		echo ""
 
 		local pkgPath="$tmpDir/InstallAssistant.pkg"
-		if ! curl --location --progress-bar --fail "$dlURLs" -o "$pkgPath" 2>&1; then
+		download_curl_interruptible "$dlURLs" "$pkgPath"
+		local dlResult=$?
+		if [ "$dlResult" != "0" ]; then
 			echo ""
-			echo "Download failed. Check your network connection and try again."
+			if [ "$dlResult" = "130" ]; then
+				echo "Download cancelled."
+			else
+				echo "Download failed. Check your network connection and try again."
+			fi
 			echo ""
 			rm -rf "$tmpDir"
 			disp_pause_for_input
@@ -1324,10 +1379,15 @@ download_fetch_and_process () {
 				*) continue ;;
 			esac
 			echo "Downloading $_hfsFname..."
-			if ! curl --location --progress-bar --fail "$_hfsURL" \
-			          -o "$tmpDir/$_hfsFname" 2>&1; then
+			download_curl_interruptible "$_hfsURL" "$tmpDir/$_hfsFname"
+			local hfsDlResult=$?
+			if [ "$hfsDlResult" != "0" ]; then
 				echo ""
-				echo "Download of $_hfsFname failed. Check your network connection and try again."
+				if [ "$hfsDlResult" = "130" ]; then
+					echo "Download cancelled."
+				else
+					echo "Download of $_hfsFname failed. Check your network connection and try again."
+				fi
 				echo ""
 				rm -rf "$tmpDir"
 				disp_pause_for_input
@@ -1430,6 +1490,15 @@ download_fetch_and_process () {
 
 	CREATE_INSTALL_MEDIA )
 		add_mas_createinstallmedia "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
+		;;
+
+	* )
+		disp_print_header
+		echo "The AddFunc configured for ${confKey} in makedrive.conf is not"
+		echo "recognized ('${addFunc}'), so the downloaded installer was not"
+		echo "processed. Correct the conf entry and try again."
+		echo ""
+		disp_pause_for_input
 		;;
 
 	esac
@@ -1910,6 +1979,15 @@ add_menu_main () {
 						"${!dispNameVar}"
 					;;
 
+				* )
+					disp_print_header
+					echo "The AddFunc configured for ${addMenuKey} in makedrive.conf is not"
+					echo "recognized ('${!addFuncVar}'). No action was taken. Correct the"
+					echo "conf entry and try again."
+					echo ""
+					disp_pause_for_input
+					;;
+
 				esac
 
 			fi
@@ -2004,7 +2082,7 @@ download_sync_conf () {
 		# renamed into place atomically so a partial write never corrupts
 		# the conf. The change count is printed to stdout and captured.
 		local tmpConf
-		tmpConf=$(mktemp "${confPath}.XXXXXX")
+		tmpConf=$(mktemp "${confPath}.XXXXXX") || continue  # can't stage safely; skip this update
 		# shellcheck disable=SC2016  # $ refs are awk variables, not shell
 		local awkProg='
 function lsub(str, from, to,    i) {
@@ -3479,6 +3557,14 @@ notify_pushover_test () {
 # ------------------------------------------------------------------------------
 postflight_cleanup () {
 
+	# Detach any makedrive scratch volumes an interrupted run left mounted,
+	# before their backing images are deleted below ("<name> temp" from
+	# createinstallmedia, "Shared Support" from its Mojave+ asset download).
+	local _cleanupVol
+	for _cleanupVol in "/Volumes/"*" temp" "/Volumes/Shared Support"; do
+		[ -d "$_cleanupVol" ] && hdiutil detach -force "$_cleanupVol" 2>/dev/null
+	done
+
 	rm -f "$makedriveLockFile"
 	rm -f "$makedriveInstTmpImageFile"
 	rm -f "/var/tmp/makedrive-icon.shadow" "/var/tmp/makedrive-icon-merged.dmg"
@@ -3488,7 +3574,7 @@ postflight_cleanup () {
 		[ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$executionPath/restorekit"
 	fi
 
-	rm -f "/var/tmp/makedrive-syncvars."*
+	rm -f "${TMPDIR:-/tmp}/makedrive-syncvars."* "${TMPDIR:-/tmp}/makedrive-dlcatalog."*
 
 	exit
 
@@ -3633,12 +3719,13 @@ preflight_check_root () {
 		echo ""
 		echo "makedrive must be run as root for proper operation."
 		echo ""
-		# Re-run the script as root, then always exit with the child's status.
-		# The exit must be unconditional: with "sudo ... && exit", a failed
-		# password or any nonzero exit from the elevated child would drop
-		# execution through into the rest of the script unprivileged.
-		sudo -p "Enter your admin password and hit return to continue: " "$executionPath/$(basename "$0")"
-		exit $?
+		# Replace this process with the root re-run via exec: nothing of the
+		# unprivileged parent remains to fall through on a failed password, or
+		# to catch a Control-C meant for the elevated child (the parent's
+		# script-wide SIGINT trap would otherwise fire alongside the child's
+		# scoped download cancellation). Non-interactive bash exits if exec
+		# fails, so nothing runs unprivileged either way.
+		exec sudo -p "Enter your admin password and hit return to continue: " "$executionPath/$(basename "$0")"
 	fi
 		
 }
@@ -3733,6 +3820,125 @@ migrate_pushover_credentials () {
 		"$sysKeychain" >/dev/null 2>&1
 
 	oldUserKey=""; oldAppToken=""
+
+}
+
+
+# ------------------------------------------------------------------------------
+# preflight_check_conf
+# Validates the image and build type definitions in makedrive.conf before any
+# menu is offered. Every image key referenced by the add menu or a build type
+# must define the variables the partition and deploy code dereference, and
+# the fields that build_format_target_disk eval-expands unquoted into the
+# diskutil partition string (VolType, StartName, VolSize, scheme) must not
+# contain whitespace - whitespace there silently misaligns the partition
+# argument triplets. Without this check a conf typo surfaces only after the
+# target disk has already been partitioned; this turns a destroyed drive
+# into an error message at launch.
+# ------------------------------------------------------------------------------
+preflight_check_conf () {
+
+	local confProblems=""
+	local key btNum volsRef deployType suffix _var val
+
+	# Collect every image key referenced anywhere: the add menu list plus the
+	# volume lists of every build type (dataDrive is checked separately).
+	local -a allKeys=( "${addMenuOrder[@]}" )
+	for btNum in "${buildTypeNums[@]}"; do
+		volsRef="buildType${btNum}_volumes[@]"
+		for key in "${!volsRef}"; do
+			[ "$key" = "dataDrive" ] && continue
+			case " ${allKeys[*]} " in
+			*" $key "* ) ;;
+			* ) allKeys+=( "$key" ) ;;
+			esac
+		done
+	done
+
+	for key in "${allKeys[@]}"; do
+
+		# Fields dereferenced for every image during partitioning and deploy.
+		# An empty path variable also catches build type entries that have no
+		# definition block at all.
+		for suffix in "" DeployType DispName FinalName StartName VolSize VolType; do
+			_var="${key}${suffix}"
+			[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
+		done
+
+		_var="${key}DeployType"; deployType="${!_var}"
+		case "$deployType" in
+		GENERIC )
+			for suffix in AppPath NewImageVolSize; do
+				_var="${key}${suffix}"
+				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
+			done
+			;;
+		INST-A )
+			_var="${key}VolName"
+			[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
+			;;
+		"" ) ;;  # already reported as not set above
+		* )
+			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC or INST-A)\n"
+			;;
+		esac
+
+		for suffix in VolType StartName VolSize; do
+			_var="${key}${suffix}"
+			val="${!_var}"
+			case "$val" in
+			*[[:space:]]* ) confProblems+="  ${_var} contains whitespace ('${val}')\n" ;;
+			esac
+		done
+
+	done
+
+	# AddFunc routes each add menu entry to its processing function; an
+	# unrecognized value would otherwise surface only after a download.
+	for key in "${addMenuOrder[@]}"; do
+		_var="${key}AddFunc"
+		case "${!_var}" in
+		COPY_SINGLE|CREATE_INSTALL_MEDIA|CREATE_INSTALL_MEDIA_MAV ) ;;
+		* ) confProblems+="  ${_var} is '${!_var}' (must be COPY_SINGLE, CREATE_INSTALL_MEDIA, or CREATE_INSTALL_MEDIA_MAV)\n" ;;
+		esac
+	done
+
+	# The dataDrive pseudo-key feeds the same partition string.
+	for _var in dataDriveStartName dataDriveFinalName dataDriveVolSize dataDriveVolType; do
+		val="${!_var}"
+		if [ -z "$val" ]; then
+			confProblems+="  ${_var} is not set\n"
+		else
+			case "$val" in
+			*[[:space:]]* ) confProblems+="  ${_var} contains whitespace ('${val}')\n" ;;
+			esac
+		fi
+	done
+
+	# Build type partition schemes are eval-expanded too.
+	for btNum in "${buildTypeNums[@]}"; do
+		_var="buildType${btNum}_scheme"
+		val="${!_var}"
+		if [ -z "$val" ]; then
+			confProblems+="  ${_var} is not set\n"
+		else
+			case "$val" in
+			*[[:space:]]* ) confProblems+="  ${_var} contains whitespace ('${val}')\n" ;;
+			esac
+		fi
+	done
+
+	[ -z "$confProblems" ] && return 0
+
+	disp_print_header
+	echo "makedrive.conf has problems that must be corrected before makedrive can run:"
+	echo ""
+	echo -e "$confProblems"
+	echo "Nothing has been modified. Correct the entries above in makedrive.conf and"
+	echo "run makedrive again."
+	echo ""
+	disp_pause_for_input "Hit enter to exit makedrive."
+	exit 1
 
 }
 
@@ -4131,7 +4337,9 @@ unset -f _bt_detail_size
 unset _btNum _btDetailVar _btVols _btHasImageKey _btHasDataDrive _btVolKey
 
 # Performing individual checks once at start of execution, rather than every run
-# through the main application loop
+# through the main application loop. The conf lint runs first so nothing else
+# acts on a broken configuration.
+preflight_check_conf
 preflight_check_for_restorekit
 preflight_get_boot_device
 preflight_check_instance
