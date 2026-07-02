@@ -27,9 +27,15 @@ okToErase=""
 stayInMainMenuLoop=""
 trackToTake=""
 
-# Script-internal temporary file paths
-makedriveInstTmpImageFile="/var/tmp/makedrivetemp.sparseimage"
+# Script-internal temporary file paths. The lockfile must live at a fixed,
+# predictable path so a second instance can find it. Everything else lives in
+# a root-owned scratch directory created with an unpredictable name once root
+# is established (see the mktemp -d in the startup flow) - fixed scratch
+# paths in world-writable /var/tmp would be symlink-plant targets for a
+# process running as root.
 makedriveLockFile="/var/tmp/makedrivelockfile"
+makedriveScratchDir=""
+makedriveInstTmpImageFile=""
 
 # Configuration and credentials are stored in the invoking user's home directory.
 # Before sudo elevation $SUDO_USER is empty and $USER is the real user; after
@@ -364,8 +370,8 @@ add_copy_single_dmg () {
 			# shadow into the UDRW image that is byte-patched below and compressed
 			# after. Compress and scan run exactly once, after any icon work is
 			# done.
-			local iconShadow="/var/tmp/makedrive-icon.shadow"
-			local iconMergedDmg="/var/tmp/makedrive-icon-merged.dmg"
+			local iconShadow="$makedriveScratchDir/makedrive-icon.shadow"
+			local iconMergedDmg="$makedriveScratchDir/makedrive-icon-merged.dmg"
 			local iconMount="" iconApplied="N"
 			rm -f "$iconShadow"
 			iconMount=$(hdiutil attach "$2" -shadow "$iconShadow" \
@@ -938,7 +944,7 @@ host_macos_version () {
 add_installer_from_pkg () {
 
 	local appPath="$1"
-	local expandDir="/private/var/tmp/makedrive_pkgexpand"
+	local expandDir="$makedriveScratchDir/pkgexpand"
 	local pkgPath esdMember compDir payloadPath stageApp stagedAppDir
 	local expectedVer pkgVer instInfo
 	local _dmgDevice=""
@@ -1194,6 +1200,37 @@ add_mas_createinstallmedia_mav () {
 
 
 # ------------------------------------------------------------------------------
+# download_verify_size
+# Compares a downloaded file's on-disk size against the size Apple's catalog
+# (or the hardcoded CDN table) says it should be. curl --fail catches HTTP
+# errors but not silent truncation; an exact size check does, cheaply. A zero
+# or empty expected size skips the check.
+#
+# $1 - Path to the downloaded file
+# $2 - Expected size in bytes
+# ------------------------------------------------------------------------------
+download_verify_size () {
+
+	local actualBytes
+
+	if [ -z "$2" ] || [ "$2" = "0" ]; then
+		return 0
+	fi
+
+	actualBytes=$(stat -f%z "$1" 2>/dev/null)
+	if [ "$actualBytes" != "$2" ]; then
+		echo ""
+		echo "Downloaded file ${1##*/} is ${actualBytes:-0} bytes but should be $2 bytes."
+		echo "The download may have been truncated or altered. Try again."
+		return 1
+	fi
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
 # download_curl_interruptible
 # Downloads a single URL with Control-C scoped to cancel just this transfer.
 # The script-wide SIGINT trap (postflight_cleanup) would otherwise exit
@@ -1237,10 +1274,12 @@ download_curl_interruptible () {
 # $2 - source type: "cdn_dmg" | "catalog_single" | "catalog_hfs"
 # $3 - URL, or pipe-separated list for catalog_hfs: dist_url|pkg1_url|pkg2_url|...
 # $4 - display label (e.g. "10.15.7 App Store Install")
+# $5 - expected download size in bytes (catalog_hfs: total for the files
+#      actually downloaded); empty or 0 skips size verification
 # ------------------------------------------------------------------------------
 download_fetch_and_process () {
 
-	local confKey="$1" dlType="$2" dlURLs="$3" dlLabel="$4"
+	local confKey="$1" dlType="$2" dlURLs="$3" dlLabel="$4" dlExpectedBytes="${5:-0}"
 
 	# Resolve conf variables via indirect expansion
 	local _v appPath buildNum newVolSize finalName instPath dispName addFunc srcPath volName
@@ -1290,6 +1329,13 @@ download_fetch_and_process () {
 			return 1
 		fi
 
+		if ! download_verify_size "$dmgPath" "$dlExpectedBytes"; then
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
 		echo ""
 
 		if ! add_installer_from_pkg "$appPath" "$dispName" "$dmgPath"; then
@@ -1316,6 +1362,13 @@ download_fetch_and_process () {
 			else
 				echo "Download failed. Check your network connection and try again."
 			fi
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
+
+		if ! download_verify_size "$pkgPath" "$dlExpectedBytes"; then
 			echo ""
 			rm -rf "$tmpDir"
 			disp_pause_for_input
@@ -1394,6 +1447,25 @@ download_fetch_and_process () {
 				return 1
 			fi
 		done
+
+		# The catalog's per-file sizes aren't carried through the URL list,
+		# but dlExpectedBytes is the sum for exactly the files downloaded
+		# above, so the combined size on disk must match it.
+		local _hfsActualBytes=0 _hfsFile
+		for _hfsFile in "$tmpDir"/*; do
+			[ -f "$_hfsFile" ] && _hfsActualBytes=$(( _hfsActualBytes + $(stat -f%z "$_hfsFile") ))
+		done
+		if [ -n "$dlExpectedBytes" ] && [ "$dlExpectedBytes" != "0" ] && \
+		   [ "$_hfsActualBytes" != "$dlExpectedBytes" ]; then
+			echo ""
+			echo "The downloaded files total ${_hfsActualBytes} bytes but should total"
+			echo "${dlExpectedBytes} bytes. A download may have been truncated or altered."
+			echo "Try again."
+			echo ""
+			rm -rf "$tmpDir"
+			disp_pause_for_input
+			return 1
+		fi
 
 		local _autoStage="$tmpDir/auto_stage"
 		local _esdStage="$tmpDir/esd_stage"
@@ -1877,7 +1949,8 @@ download_installer_menu () {
 					"${dlKeys[$selIdx]}" \
 					"${dlTypes[$selIdx]}" \
 					"${dlURLs[$selIdx]}" \
-					"${dlLabels[$selIdx]}"
+					"${dlLabels[$selIdx]}" \
+					"${dlBytes[$selIdx]}"
 			fi
 			;;
 
@@ -3333,6 +3406,7 @@ makedrive_uninstall () {
 	fi
 
 	rm -f "$makedriveLockFile"
+	[ -n "$makedriveScratchDir" ] && rm -rf "$makedriveScratchDir"
 	# Remove a conf still sitting alongside the script (only present if the
 	# startup migration to Application Support did not run or failed). Skip
 	# when scriptDir is the support dir, which was already removed above.
@@ -3367,14 +3441,17 @@ notify_pushover_send () {
 
 	if [ -z "$userKey" ] || [ -z "$appToken" ]; then return 0; fi
 
-	curl \
-		--silent \
-		--max-time 10 \
-		--form-string "token=${appToken}" \
-		--form-string "user=${userKey}" \
-		--form-string "message=${1}" \
+	# Credentials ride curl's stdin via --config rather than argv, where any
+	# process listing could read them for the duration of the send. Message
+	# text must not contain double quotes (they would break the config-file
+	# quoting); every caller passes fixed makedrive strings.
+	curl --silent --max-time 10 --config - \
 		"https://api.pushover.net/1/messages.json" \
-		> /dev/null 2>&1
+		> /dev/null 2>&1 <<-CURLEOF
+		form-string = "token=${appToken}"
+		form-string = "user=${userKey}"
+		form-string = "message=${1}"
+	CURLEOF
 
 }
 
@@ -3432,25 +3509,29 @@ notify_pushover_setup () {
 
 			if [ -z "$userKey" ] || [ -z "$appToken" ]; then
 				echo "Setup cancelled - both a User Key and App Token are required."
+			elif ! [[ "$userKey" =~ ^[A-Za-z0-9]+$ ]] || ! [[ "$appToken" =~ ^[A-Za-z0-9]+$ ]]; then
+				echo "Setup cancelled - Pushover keys are strictly alphanumeric, and one"
+				echo "of the values entered contains other characters."
 			else
 
 				local saveUserKeyResult saveAppTokenResult
 
-				security add-generic-password \
-					-s "makedrive-pushover-userkey" \
-					-a "makedrive" \
-					-w "$userKey" \
-					-U \
-					"$makedrivePushoverKeychain"
-				saveUserKeyResult=$?
+				# The secrets ride security(1)'s stdin (-i command mode)
+				# instead of -w arguments, which any process listing could
+				# read while the command runs. security -i does not propagate
+				# command failures in its exit status, so each write is
+				# verified by reading the credential back.
+				security -i <<-SECEOF
+					add-generic-password -U -s makedrive-pushover-userkey -a makedrive -w ${userKey} "${makedrivePushoverKeychain}"
+				SECEOF
+				saveUserKeyResult=1
+				[ "$(notify_pushover_read_userkey)" = "$userKey" ] && saveUserKeyResult=0
 
-				security add-generic-password \
-					-s "makedrive-pushover-apptoken" \
-					-a "makedrive" \
-					-w "$appToken" \
-					-U \
-					"$makedrivePushoverKeychain"
-				saveAppTokenResult=$?
+				security -i <<-SECEOF
+					add-generic-password -U -s makedrive-pushover-apptoken -a makedrive -w ${appToken} "${makedrivePushoverKeychain}"
+				SECEOF
+				saveAppTokenResult=1
+				[ "$(notify_pushover_read_apptoken)" = "$appToken" ] && saveAppTokenResult=0
 
 				userKey=""; appToken=""
 
@@ -3526,15 +3607,19 @@ notify_pushover_test () {
 	echo "Sending test notification..."
 	echo ""
 
+	# Credentials on curl's stdin via --config, not argv - see notify_pushover_send.
 	testStatus=$(curl \
 		--silent \
 		--max-time 10 \
 		--output /dev/null \
 		--write-out "%{http_code}" \
-		--form-string "token=${appToken}" \
-		--form-string "user=${userKey}" \
-		--form-string "message=makedrive: Test notification - Pushover is configured correctly." \
-		"https://api.pushover.net/1/messages.json" 2>/dev/null)
+		--config - \
+		"https://api.pushover.net/1/messages.json" 2>/dev/null <<-CURLEOF
+		form-string = "token=${appToken}"
+		form-string = "user=${userKey}"
+		form-string = "message=makedrive: Test notification - Pushover is configured correctly."
+	CURLEOF
+	)
 
 	if [ "$testStatus" = "200" ]; then
 		echo "Test notification sent successfully. Check your Pushover device."
@@ -3558,16 +3643,22 @@ notify_pushover_test () {
 postflight_cleanup () {
 
 	# Detach any makedrive scratch volumes an interrupted run left mounted,
-	# before their backing images are deleted below ("<name> temp" from
-	# createinstallmedia, "Shared Support" from its Mojave+ asset download).
-	local _cleanupVol
-	for _cleanupVol in "/Volumes/"*" temp" "/Volumes/Shared Support"; do
-		[ -d "$_cleanupVol" ] && hdiutil detach -force "$_cleanupVol" 2>/dev/null
+	# before their backing images are deleted below. Temp volume names are
+	# derived from the conf ("<FinalName> temp", the volume name handed to
+	# createinstallmedia) rather than globbed, so an unrelated user volume
+	# that merely ends in " temp" is never touched. "Shared Support" is the
+	# asset volume Mojave+ createinstallmedia mounts.
+	local _cleanupKey _cleanupNameVar _cleanupVol
+	for _cleanupKey in "${addMenuOrder[@]}"; do
+		_cleanupNameVar="${_cleanupKey}FinalName"
+		_cleanupVol="/Volumes/${!_cleanupNameVar} temp"
+		[ -n "${!_cleanupNameVar}" ] && [ -d "$_cleanupVol" ] && \
+		    hdiutil detach -force "$_cleanupVol" 2>/dev/null
 	done
+	[ -d "/Volumes/Shared Support" ] && hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
 
 	rm -f "$makedriveLockFile"
-	rm -f "$makedriveInstTmpImageFile"
-	rm -f "/var/tmp/makedrive-icon.shadow" "/var/tmp/makedrive-icon-merged.dmg"
+	[ -n "$makedriveScratchDir" ] && rm -rf "$makedriveScratchDir"
 
 	if [ -d "$executionPath/restorekit" ]; then
 		chmod -RN "$executionPath/restorekit"
@@ -3809,15 +3900,28 @@ migrate_pushover_credentials () {
 
 	[ -z "$oldUserKey" ] || [ -z "$oldAppToken" ] && return 0
 
-	security add-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
-		-w "$oldUserKey" -U "$makedrivePushoverKeychain" 2>/dev/null
-	security add-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
-		-w "$oldAppToken" -U "$makedrivePushoverKeychain" 2>/dev/null
+	# Migrated values were stored by makedrive and are alphanumeric; anything
+	# else is unexpected enough to leave in place rather than re-store.
+	if ! [[ "$oldUserKey" =~ ^[A-Za-z0-9]+$ ]] || ! [[ "$oldAppToken" =~ ^[A-Za-z0-9]+$ ]]; then
+		return 0
+	fi
 
-	security delete-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
-		"$sysKeychain" >/dev/null 2>&1
-	security delete-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
-		"$sysKeychain" >/dev/null 2>&1
+	# Secrets on security's stdin rather than argv - see notify_pushover_setup.
+	security -i 2>/dev/null <<-SECEOF
+		add-generic-password -U -s makedrive-pushover-userkey -a makedrive -w ${oldUserKey} "${makedrivePushoverKeychain}"
+		add-generic-password -U -s makedrive-pushover-apptoken -a makedrive -w ${oldAppToken} "${makedrivePushoverKeychain}"
+	SECEOF
+
+	# Only remove the System Keychain originals once the login keychain copies
+	# are confirmed readable (security -i does not report failures via exit
+	# status).
+	if [ "$(notify_pushover_read_userkey)" = "$oldUserKey" ] && \
+	   [ "$(notify_pushover_read_apptoken)" = "$oldAppToken" ]; then
+		security delete-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+			"$sysKeychain" >/dev/null 2>&1
+		security delete-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+			"$sysKeychain" >/dev/null 2>&1
+	fi
 
 	oldUserKey=""; oldAppToken=""
 
@@ -3992,18 +4096,45 @@ preflight_check_dependencies () {
 	# Check PIL (after Xcode tools, so python3 is available)
 	python3 -c "from PIL import Image" 2>/dev/null && return 0
 
-	echo "Installing PIL (Pillow) for icon normalization..."
-	echo "(This is needed for boot picker compatibility on pre-2013 Macs.)"
+	# Installing a PyPI package as root is not something to do silently, and
+	# the feature it powers is cosmetic - ask once, and remember a refusal in
+	# the support directory so the prompt doesn't nag every launch.
+	local pilDeclineMarker="$makedriveSupportDir/pillow-declined"
+	local pilInstallChoice
+	[ -f "$pilDeclineMarker" ] && return 0
+
+	echo "makedrive can install the Pillow imaging library (downloaded from PyPI,"
+	echo "installed for the system Python as root) to normalize volume icons for"
+	echo "the EFI boot picker on pre-2013 Macs. Without it everything still works;"
+	echo "icons just may not appear in the boot picker on those older machines."
+	echo ""
+	echo "Enter 'I' to install Pillow now, or any other key to skip. If you skip,"
+	echo "makedrive won't ask again (delete the following file to be re-asked):"
+	echo "  $pilDeclineMarker"
+	read -rn 1 pilInstallChoice
 	echo ""
 
-	if python3 -m pip install -q pillow 2>/dev/null; then
-		echo "PIL installed successfully."
+	case "$pilInstallChoice" in
+
+	I|i )
+		echo "Installing Pillow..."
+		if python3 -m pip install -q pillow 2>/dev/null; then
+			echo "Pillow installed successfully."
+			echo ""
+		else
+			echo "Warning: Pillow installation failed. Icons will still work,"
+			echo "but may not appear in EFI boot pickers on older Macs."
+			echo ""
+		fi
+		;;
+
+	* )
+		mkdir -p "$makedriveSupportDir"
+		touch "$pilDeclineMarker"
 		echo ""
-	else
-		echo "Warning: PIL installation failed. Icons will still work,"
-		echo "but may not appear in EFI boot pickers on older Macs."
-		echo ""
-	fi
+		;;
+
+	esac
 
 }
 
@@ -4367,6 +4498,17 @@ migrate_pushover_credentials
 
 startup_sync_versions
 
+# Root-owned scratch space (mode 700, unpredictable name) for the installer
+# sparseimage, icon work, and package expansion.
+makedriveScratchDir=$(mktemp -d "/var/tmp/makedrive-scratch.XXXXXX") || {
+	echo "Could not create the makedrive scratch directory."
+	exit 1
+}
+makedriveInstTmpImageFile="$makedriveScratchDir/makedrivetemp.sparseimage"
+
+# Remove anything pre-planted at the fixed lockfile path (a symlink here
+# would otherwise redirect the root-owned touch) before creating our own.
+rm -f "$makedriveLockFile"
 touch "$makedriveLockFile"
 
 stayInMainMenuLoop="Y"
