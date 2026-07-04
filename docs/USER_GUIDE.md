@@ -1,7 +1,7 @@
 # makedrive User Guide
 
-**Version:** Build 201  
-**Updated:** 2026-06-30  
+**Version:** Build 203  
+**Updated:** 2026-07-04  
 **Author:** Ian Williams  
 **Contact:** [ian@themacgenie.com](mailto:ian@themacgenie.com)  
 **Project:** [https://makedrive.com](https://makedrive.com)
@@ -25,7 +25,7 @@
 - [Pushover Notifications](#pushover-notifications)
 - [Uninstalling makedrive](#uninstalling-makedrive)
 - [Security Considerations](#security-considerations)
-- [Changelog](#changelog)
+- [Release History](#release-history)
 - [Acknowledgements](#acknowledgements)
 
 ---
@@ -65,11 +65,11 @@ and lets you re-purpose a drive quickly when a new macOS version ships.
   launch and then exits so installation can complete.
 - **Pillow (PIL), a Python imaging library.** Used to build the legacy
   `it32`/`t8mk` icon format that pre-2013 EFI boot pickers need. Pillow
-  isn't part of macOS or the Xcode Command Line Tools, so makedrive
-  installs it automatically via `pip` the first time it's needed. If that
-  installation fails (for example, on a host with no network access),
-  makedrive continues normally. Icons are still applied to volumes, but
-  they may not appear in the boot picker on older Macs.
+  isn't part of macOS or the Xcode Command Line Tools, so the first time
+  it's needed makedrive explains what it's for and offers to install it
+  via `pip`. If you decline, makedrive remembers your answer and continues
+  normally. Icons are still applied to volumes either way, but without
+  Pillow they may not appear in the boot picker on older Macs.
 - A **local administrator account.** makedrive uses
   command-line tools that require root access by way of `sudo`, so full
   administrator rights on the host are required.
@@ -352,9 +352,10 @@ displays both in the boot picker and when the volume is mounted.
 Main Menu option 4 builds a drive. First choose a build type:
 
 ```
- 10. Apple Silicon & Intel Installers
- 11. Older PPC & Intel 10.3-10.11 Installers
- 12. DataDrive Only
+ 1. Apple Silicon & Intel Installers
+ 2. Older PPC & Intel 10.3-10.11 Installers
+ 3. DataDrive Only
+  R. Return to disk build menu
   X. Return to the main menu
 ```
 
@@ -404,6 +405,12 @@ All configured image types appear in the chooser: both **GENERIC**
 (createinstallmedia-based) and **INST-A** (pre-built or legacy) images. The
 same boot-disk protection applies, so makedrive won't let you erase the
 disk you're currently running from.
+
+Media is partitioned to match the age of the installer. Images for Mac OS
+X 10.5 Leopard and earlier are restored onto Apple Partition Map media,
+which PowerPC Macs require and which the early Intel Macs of that era boot
+properly, so one drive covers both. Everything from 10.6 Snow Leopard
+onward uses the modern GUID scheme.
 
 When imaging is complete, makedrive ejects the disk and asks whether you'd
 like to restore another.
@@ -489,18 +496,20 @@ makedrive makes network connections in four situations, all of which can be
 avoided if you prefer an offline workflow:
 
 1. **Version checking.** At launch makedrive fetches Apple's software-update
-   catalog to compare installer build numbers. The catalog URLs are defined
-   in makedrive.conf. A network failure here isn't fatal: makedrive simply
-   leaves the configuration unchanged and continues.
+   catalog to compare installer build numbers. The result is kept for two
+   hours, so launches close together reuse it and skip the network entirely.
+   The catalog URLs are defined in makedrive.conf. A network failure here
+   isn't fatal: makedrive simply leaves the configuration unchanged and
+   continues.
 2. **PIL (Pillow) installation.** On first launch makedrive checks whether
    the Pillow Python imaging library is installed. If it isn't, makedrive
-   installs it automatically via `pip` from the Python Package Index
-   (PyPI). Pillow is used to normalize volume icon formats for
-   compatibility with pre-2013 EFI boot pickers. After the initial
-   installation it isn't re-downloaded. If installation fails, for example
-   in an offline or pip-restricted environment, makedrive continues
-   normally. Icons are still applied to volumes, but they may not appear in
-   the boot picker on older hardware.
+   explains what it's for and asks before installing it via `pip` from the
+   Python Package Index (PyPI). Pillow is used to normalize volume icon
+   formats for compatibility with pre-2013 EFI boot pickers. If you
+   decline, makedrive remembers your answer and won't ask again; the prompt
+   explains how to be asked again later. Declining or a failed installation
+   changes nothing else: icons are still applied to volumes, but they may
+   not appear in the boot picker on older hardware.
 3. **Xcode Command Line Tools installation.** If the Xcode Command Line
    Tools aren't present, makedrive offers to install them. Typing `I` to
    confirm hands off to Apple's own installer dialog
@@ -512,8 +521,14 @@ avoided if you prefer an offline workflow:
 
 makedrive.conf is the configuration that drives partitioning and
 deployment. It's controlled by the administrator who runs makedrive, and
-it's the intended trust boundary. Pushover credentials are stored in your
-login keychain rather than in any file on disk.
+it's the intended trust boundary. Be aware of what that means: the file is
+kept writable by your user account so it can be edited without elevation,
+and everything in it runs with root privileges the next time makedrive
+starts. Anything on the Mac that can modify makedrive.conf can therefore
+act as root through makedrive, so treat write access to that file the same
+way you treat administrator access to the machine itself. Pushover
+credentials are stored in your login keychain rather than in any file on
+disk.
 
 ### Installer binary re-signing (10.10 through 10.15)
 
@@ -599,88 +614,10 @@ longer build those images at all.
 
 ---
 
-## Changelog
+## Release History
 
-Full release history is in [RELEASE_HISTORY.md](RELEASE_HISTORY.md).
-
-### Build 202 - 2026-07-01
-
-- **Configuration derivation:** addMenuOrder, buildTypeNums, and build type
-  size estimates are now derived automatically from makedrive.conf's image
-  and build-type blocks.
-- **Build type renumbering:** build types are now numbered 1, 2, and 3
-  (previously 10, 11, and 12, a leftover from a subsystem removed in Build
-  200).
-- **macOS 10.15 Catalina boot panic fix:** makedrive was incorrectly
-  filtering out BaseSystem.chunklist and AppleDiagnostics.chunklist files,
-  which the xnu kernel requires for root-dmg authentication at boot. Their
-  absence caused immediate boot panics. These files are now correctly included
-  in SharedSupport and confirmed working on real hardware.
-- **Documentation corrections:** makedrive.conf's location (per-user
-  Application Support, not system-wide) and Pushover credential storage (the
-  login keychain, not the System Keychain) are now described correctly.
-
-### Build 201 - 2026-06-30
-
-- **EFI volume icons now present correctly in old and new style EFI.**
-- **Disk labels now present consistently across all OS versions.**
-- **datefix pre-flight script:** makedrive now places a `datefix` shell
-  script at the root of every deployed 10.7, 10.8, and 10.9 install
-  volume. Running it from the installer's Terminal disables Wi-Fi (so the
-  clock can't be corrected by a time server) and sets the clock back to a
-  date within the validity window of the installer's signing certificates,
-  which have expired and won't be re-issued by Apple.
-- **Legacy installer re-signing (10.10 through 10.15):**
-  createinstallmedia was being killed on launch (or aborting during
-  framework load) on macOS 26 Golden Gate and later. Newer systems
-  validate Apple "platform" binaries against a per-OS trust cache that old
-  installers aren't in. makedrive now ad-hoc re-signs every executable in
-  the installer bundle before running createinstallmedia, replacing the
-  platform claim with a locally trusted signature. Catalina additionally
-  required clearing Finder-info metadata that blocked signing. Confirmed
-  building on Golden Gate for 10.13 through 11.
-- **Source 10.7 through current installers from Apple directly**
-- **Sierra version-mismatch fix:** Apple shipped a Sierra installer whose
-  recorded version disagrees with what its createinstallmedia expects,
-  which caused it to spawn endlessly. makedrive now corrects the version
-  before running so creation completes.
-- **Progress messaging for silent steps:** steps that hand off to a long
-  external process with no output (installer verification, re-signing,
-  and icon merging) now print a status line so the terminal no longer
-  appears to hang.
-- **Quieter keychain migration:** Pushover credential migration and
-  removal no longer leak raw `security` command dumps into the terminal.
-- **conf archive:** makedrive.conf migrations now archive the previous
-  conf with a timestamp in a "conf archive" subfolder of Application
-  Support, keeping the 10 most recent copies as a safety net against
-  unintended changes.
-- **Restore to USB or SD card:** new Main Menu option 4 restores a single
-  installer image to a USB drive, SD card, or other small media. The full
-  disk is used for the install volume, and DataDrive isn't copied.
-
-### Build 200 - 2026-06-27 (first public release)
-
-- Refocused makedrive as a macOS install and restore drive builder. The
-  legacy diagnostic and triage subsystem (ASD/AXD downloads, diagnostic
-  and triage build menus, icon-zip import) has been removed.
-- Configuration externalized to **makedrive.conf**, stored in
-  `/Library/Application Support/makedrive/`, with automatic migration of a
-  conf placed next to the script.
-- Added **Pushover** notifications (replacing the retired Boxcar service),
-  with credentials stored in the System Keychain.
-- Added **automatic version checking** against Apple's software-update
-  catalog, keeping installer build numbers current in makedrive.conf.
-- Added an **Uninstall** option to the Main Menu.
-- Added installer **build-number verification** before adding to
-  restorekit.
-- Volume icons are now extracted automatically from the installer app
-  bundle, including the differently located icon used by 10.3 through
-  10.6 installers.
-- Boot-disk protection now covers **Apple Silicon** in addition to Intel.
-- Installer coverage spans **10.3 Panther through the current macOS
-  release.**
-
-*For the complete release history going back to 2011, see [RELEASE_HISTORY.md](RELEASE_HISTORY.md).*
+The complete release history, from the current build back to makedrive's
+origins in 2011, lives in [RELEASE_HISTORY.md](RELEASE_HISTORY.md).
 
 ---
 

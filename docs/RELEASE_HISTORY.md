@@ -5,6 +5,59 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
+### Build 203 - 2026-07-04
+
+- **Control-C cancels downloads:** pressing Control-C during an installer
+  download now cancels just that transfer and returns to the menu instead
+  of exiting makedrive.
+- **Configuration checked at launch:** makedrive.conf is now validated
+  before any menu is offered. A missing variable, an unrecognized deploy
+  type or AddFunc, or whitespace in a partition field is reported as an
+  error at launch instead of surfacing after a target disk has already
+  been erased.
+- **Faster startup:** the launch version check reuses its catalog result
+  for two hours, so closely spaced launches skip the network and start
+  instantly. When a fetch does run, the minimum wait dropped from six
+  seconds to four.
+- **USB and SD restores of 10.5 and earlier now use Apple Partition Map,**
+  so the media boots PowerPC Macs (which require APM) as well as the early
+  Intel Macs those releases support. 10.6 and later continue to use the
+  GUID scheme.
+- **Image validation follows the real mount point:** adding an image now
+  verifies the volume makedrive actually mounted, so an unrelated volume
+  that shares the same name can no longer cause the right image to be
+  rejected or vouch for a wrong one.
+- **Security hardening:** scratch images and package expansion moved into
+  a root-owned directory with an unpredictable name; Pushover credentials
+  no longer appear in process listings during keychain and network
+  operations; values from Apple's catalog and the cached version check are
+  validated before the script reads them; downloads are checked against
+  their expected sizes; and Pillow installation asks for consent instead
+  of running silently at launch.
+- **Elevation and instance-check fixes:** a failed administrator
+  authentication can no longer continue unprivileged, and the duplicate
+  instance check now also works when makedrive is launched directly with
+  sudo.
+- **Volume UUIDs preserved:** the Finder metadata patch applied during
+  icon work now clears only the intended fields instead of zeroing the
+  volume UUID as well.
+- **Leaner icon application:** applying a volume icon now rewrites the
+  image twice instead of three times and mounts it once instead of twice,
+  saving time and disk activity on large images. On merge failure the
+  original image is left untouched.
+- **Internal consolidation:** the two embedded catalog fetchers became
+  one, and duplicated re-signing, image-attach, cleanup, and compress/scan
+  logic was unified, removing several hundred lines with no behavior
+  change.
+- **Interrupted runs clean up properly:** temp volumes left mounted by an
+  interrupted build are detached during cleanup, and a failed volume
+  rename during createinstallmedia stops the process with a clear message
+  instead of cascading.
+- **Documentation:** the user guide's changelog now lives entirely in
+  RELEASE_HISTORY.md, the makedrive.conf trust boundary is stated
+  explicitly under Security Considerations, and stale descriptions
+  (Pillow installation, build type numbering) were corrected.
+
 ### Build 202 - 2026-07-01
 
 - **Configuration derivation:** addMenuOrder, buildTypeNums, and build type

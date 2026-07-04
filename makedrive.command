@@ -11,7 +11,7 @@
 # https://makedrive.com
 #
 # Current script version:
-currentVersion="2026-07-01 - Build 202"
+currentVersion="2026-07-04 - Build 203"
 
 # Global Variable Declarations
 bootDiskID=""
@@ -249,7 +249,7 @@ dmg_apply_volume_icon () {
 # ------------------------------------------------------------------------------
 add_copy_single_dmg () {
 
-	local testDevice grepReturn dmgBaseDir _pkgExtractedApp=""
+	local testDevice testMountPoint mpBase grepReturn dmgBaseDir _pkgExtractedApp=""
 
 	disp_print_header
 
@@ -296,7 +296,7 @@ add_copy_single_dmg () {
 	# testDevice is a local variable that is set to the device ID of the mounted
 	# disk image.  Since we need to mount the image with its own name to verify
 	# if it is correct, we need the device ID to properly unmount. 
-	IFS=$'\t' read -r testDevice _ < <(dmgtool_attach_parse "$imagePathToAdd" -readonly)
+	IFS=$'\t' read -r testDevice testMountPoint < <(dmgtool_attach_parse "$imagePathToAdd" -readonly)
 
 	if [ -z "$testDevice" ]; then
 		disp_print_header
@@ -308,22 +308,26 @@ add_copy_single_dmg () {
 		return 1
 	fi
 
-	# If the image has an ambiguous volume name, run a build number
-	# comparison to prevent adding the wrong DMG into restorekit. Otherwise, if
-	# the mounted volume name is unambiguous, look for the expected name.
-	if [ "$3" = "Mac OS X Install DVD" ] || [ "$3" = "Mac OS X Install ESD" ]; then
-
-		grep -qF "$4" "/Volumes/$3/System/Library/CoreServices/SystemVersion.plist"
-
-		grepReturn=$?
-
-	else
-
-		[ -d "/Volumes/$3" ]
-
-		grepReturn=$?
-
-	fi
+	# Validate against the image's own mount point rather than the expected
+	# /Volumes path, so a name collision with an already-mounted volume
+	# (which shifts our mount to "<name> 2") can neither fail the right
+	# image nor let the pre-existing volume vouch for a wrong one. The
+	# mount-point suffix macOS adds on collision is tolerated because the
+	# volume name inside the image is unchanged by it. Ambiguous volume
+	# names (shared by every retail DVD and install ESD of the era) get a
+	# build number check on top of the name.
+	mpBase="${testMountPoint##*/}"
+	grepReturn=1
+	case "$mpBase" in
+	"$3"|"$3 "[0-9]* )
+		if [ "$3" = "Mac OS X Install DVD" ] || [ "$3" = "Mac OS X Install ESD" ]; then
+			grep -qF "$4" "$testMountPoint/System/Library/CoreServices/SystemVersion.plist" 2>/dev/null
+			grepReturn=$?
+		else
+			grepReturn=0
+		fi
+		;;
+	esac
 	
 	# Unmount the disk image using the trimmed output from above.
 	hdiutil detach -quiet "$testDevice"
@@ -486,6 +490,9 @@ with open(sys.argv[1], 'r+b') as f:
 # ------------------------------------------------------------------------------
 add_create_install_dmg () {
 
+	# hdiutil create is formally deprecated as of macOS 26 in favor of
+	# "diskutil image create blank"; it still works everywhere makedrive
+	# runs, but expect this call to need migrating in a future release.
 	if ! hdiutil create -o "$1" -size "$2" -layout SPUD -fs JHFS+ -volname "$3"; then
 		return 1
 	fi
@@ -2196,24 +2203,49 @@ END { print n+0 }
 startup_sync_versions () {
 
 	local syncVarsFile macOSdlCount=0 dlIdx startTime=$SECONDS elapsed
-	syncVarsFile=$(mktemp -t makedrive-syncvars) || { echo " done."; return 0; }
+	local cacheFile="$makedriveSupportDir/catalog-cache"
+	local cacheAge cacheFresh=0
 
-	printf "Verifying latest macOS installer versions with Apple..."
+	# A catalog result newer than two hours is reused without touching the
+	# network, making closely spaced launches effectively instant. The cache
+	# lives in the user-editable support directory, so before being sourced
+	# as root its contents are validated line by line against the only
+	# shapes catalog_fetch_vars is allowed to emit.
+	if [ -f "$cacheFile" ]; then
+		cacheAge=$(( $(date +%s) - $(stat -f%m "$cacheFile" 2>/dev/null || echo 0) ))
+		if [ "$cacheAge" -ge 0 ] && [ "$cacheAge" -lt 7200 ] && \
+		   grep -q '^MACOS_DL_COUNT=' "$cacheFile" 2>/dev/null && \
+		   ! grep -qEv '^MACOS_DL_COUNT=[0-9]+$|^MACOS_DL_VERSION_[0-9]+="[0-9.]+"$|^MACOS_DL_BUILD_[0-9]+="[0-9A-Za-z.]*"$' "$cacheFile" 2>/dev/null; then
+			cacheFresh=1
+		fi
+	fi
 
-	catalog_fetch_vars sync > "$syncVarsFile" 2>/dev/null
+	if [ "$cacheFresh" = "1" ]; then
+		syncVarsFile="$cacheFile"
+	else
+		syncVarsFile=$(mktemp -t makedrive-syncvars) || return 0
 
-	echo " done."
+		printf "Verifying latest macOS installer versions with Apple..."
 
-	if ! grep -q "^MACOS_DL_COUNT=" "$syncVarsFile" 2>/dev/null; then
-		rm -f "$syncVarsFile"
-		elapsed=$(( SECONDS - startTime ))
-		[ "$elapsed" -lt 6 ] && sleep $(( 6 - elapsed ))
-		return 0
+		catalog_fetch_vars sync > "$syncVarsFile" 2>/dev/null
+
+		echo " done."
+
+		if ! grep -q "^MACOS_DL_COUNT=" "$syncVarsFile" 2>/dev/null; then
+			rm -f "$syncVarsFile"
+			elapsed=$(( SECONDS - startTime ))
+			[ "$elapsed" -lt 4 ] && sleep $(( 4 - elapsed ))
+			return 0
+		fi
+
+		# Fresh result: cache it for the two-hour window.
+		mkdir -p "$makedriveSupportDir"
+		cp "$syncVarsFile" "$cacheFile"
 	fi
 
 	# shellcheck source=/dev/null
 	. "$syncVarsFile"
-	rm -f "$syncVarsFile"
+	[ "$cacheFresh" = "1" ] || rm -f "$syncVarsFile"
 	macOSdlCount=$MACOS_DL_COUNT
 
 	makeDriveSyncNotice=""
@@ -2224,8 +2256,12 @@ startup_sync_versions () {
 	done
 	unset MACOS_DL_COUNT
 
-	elapsed=$(( SECONDS - startTime ))
-	[ "$elapsed" -lt 6 ] && sleep $(( 6 - elapsed ))
+	# The pause exists only so the on-screen network check is readable; a
+	# cache hit prints nothing and gets no artificial delay.
+	if [ "$cacheFresh" != "1" ]; then
+		elapsed=$(( SECONDS - startTime ))
+		[ "$elapsed" -lt 4 ] && sleep $(( 4 - elapsed ))
+	fi
 
 }
 
@@ -2853,17 +2889,18 @@ quick_deploy_menu_choose_image () {
 # ------------------------------------------------------------------------------
 # quick_deploy_format_disk
 # Formats target disk with a single partition for deployment.
-# GPT is always used - quick deploy targets modern USB/SD media.
 #
 # $1 - Disk number to partition
 # $2 - Volume name for the partition
 # $3 - Filesystem type (e.g. JHFS+); defaults to JHFS+ if omitted
+# $4 - Partition scheme (GPT or APM); defaults to GPT
 # ------------------------------------------------------------------------------
 quick_deploy_format_disk () {
 
 	local diskNum="$1"
 	local volumeName="$2"
 	local volType="${3:-JHFS+}"
+	local scheme="${4:-GPT}"
 
 	disp_print_header
 
@@ -2873,7 +2910,7 @@ quick_deploy_format_disk () {
 	# Unmount all volumes on the disk
 	diskutil unmountDisk force "disk$diskNum"
 
-	if ! diskutil partitionDisk "disk$diskNum" 1 GPT "$volType" "$volumeName" 0; then
+	if ! diskutil partitionDisk "disk$diskNum" 1 "$scheme" "$volType" "$volumeName" 0; then
 		return 1
 	fi
 
@@ -2901,6 +2938,7 @@ quick_deploy_start () {
 
 		local key="$quickDeployImageKey"
 		local varLookup deployType displayName imagePath startName asrName finalName volType
+		local keyRoot deployScheme
 
 		varLookup="${key}DeployType";  deployType="${!varLookup}"
 		varLookup="${key}DispName";    displayName="${!varLookup}"
@@ -2913,6 +2951,16 @@ quick_deploy_start () {
 		else
 			asrName="$finalName"
 		fi
+
+		# Deploy 10.5 and earlier onto APM media: PowerPC Macs can only boot
+		# from APM, and the Intel Macs those releases support boot APM
+		# properly too, so the resulting media works on both. 10.6 and later
+		# are Intel or Apple Silicon only and get GPT. The version comes from
+		# the numeric root of the conf key (inst103p → 103, inst1015i → 1015).
+		keyRoot="${key#inst}"
+		keyRoot="${keyRoot//[a-zA-Z]/}"
+		deployScheme="GPT"
+		[ -n "$keyRoot" ] && [ "$keyRoot" -le 105 ] 2>/dev/null && deployScheme="APM"
 
 		disp_print_header
 
@@ -2932,7 +2980,7 @@ quick_deploy_start () {
 			continue
 		fi
 
-		if ! quick_deploy_format_disk "$diskNum" "$startName" "$volType"; then
+		if ! quick_deploy_format_disk "$diskNum" "$startName" "$volType" "$deployScheme"; then
 			disp_print_header
 			echo "Disk preparation failed. The drive was not modified."
 			echo ""
@@ -3730,25 +3778,23 @@ preflight_check_for_restorekit () {
 # ------------------------------------------------------------------------------
 preflight_check_instance () {
 
-	# If the lockfile exists, then we'll check to see if a root-owned instance
-	# of makedrive is currently running.
+	# If the lockfile exists, look for another root-owned instance of
+	# makedrive actually running before deciding anything.
 	if [ -e "$makedriveLockFile" ]; then
 
-		# Look for a root-owned bash process running makedrive
-		# shellcheck disable=SC2009  # need the matching bash process line
-		ps -u root | grep bash | grep makedrive
-		dupInstanceRunning=$?
+		local otherPID killOtherPID
 
-		# If the last command returned "0", then we know another instance is running
-		if [ "$dupInstanceRunning" = "0" ] && [[ $EUID -ne 0 ]]; then
+		# Match root-owned bash processes running makedrive, excluding this
+		# process itself so the check also works when makedrive is already
+		# root here - launched directly with sudo rather than through the
+		# self-elevation flow, whose pre-elevation parent (exec'd away since)
+		# used to be the only place this check could run.
+		otherPID=$(pgrep -U 0 -f "bash .*makedrive" 2>/dev/null | grep -vx "$$" | head -n 1)
+
+		if [ -n "$otherPID" ]; then
 
 			disp_print_header
 
-			local otherPID killOtherPID
-			# Save the process ID of
-			# shellcheck disable=SC2009  # need the full ps line to extract the PID
-			otherPID=$(ps -u root | grep bash | grep makedrive | head -n 1 | awk '{print $2}')
-		
 			echo "makedrive has detected another instance of the script running."
 			echo ""
 			echo "If you ran makedrive and quit Terminal.app without exiting the script,"
@@ -3763,27 +3809,27 @@ preflight_check_instance () {
 			echo "To quit this instance of makedrive and let the other copy do its thing,"
 			echo "enter 'X' and hit return."
 			echo ""
-			echo "If you choose to quit the other instance of makedrive, you will need to"
+			echo "If you choose to quit the other instance of makedrive, you may need to"
 			echo "enter your administrator password in order to proceed."
 			echo ""
 			echo "Other PID is $otherPID"
 			echo ""
-		
+
 			read -r killOtherPID
-		
+
 			if [ "$killOtherPID" == "P" ] || [ "$killOtherPID" == "p" ]; then
-		
+
 				sudo kill -SIGINT "$otherPID"
-	
+
 			else
-			
+
 				exit
-		
+
 			fi
 
 		fi
 	fi
-	
+
 }
 
 
