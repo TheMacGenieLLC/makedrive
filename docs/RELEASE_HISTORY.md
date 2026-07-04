@@ -16,6 +16,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   certificate), and the serializer volume is cloned in place. Diagnostic
   images are excluded from the USB and SD card restore path, which stays
   installer only.
+- **Mounted-source deploys hardened:** the AXD package install and the
+  serializer clone confirm the source image actually mounted before using
+  it, and force-detach the source when finished or on failure, so an image
+  that attaches without mounting produces a clean error instead of acting
+  on an empty path.
 - **Add image menu reorganized:** Main Menu option 1 now opens a chooser
   split between macOS installers and diagnostic images, with the full list
   of images missing from restorekit shown there. The Main Menu shows a
@@ -59,13 +64,17 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   saving time and disk activity on large images. On merge failure the
   original image is left untouched.
 - **Internal consolidation:** the two embedded catalog fetchers became
-  one, and duplicated re-signing, image-attach, cleanup, and compress/scan
-  logic was unified, removing several hundred lines with no behavior
-  change.
+  one, and duplicated re-signing, image-attach, cleanup, compress/scan,
+  and restore rename logic was unified, removing several hundred lines
+  with no behavior change.
 - **Interrupted runs clean up properly:** temp volumes left mounted by an
   interrupted build are detached during cleanup, and a failed volume
   rename during createinstallmedia stops the process with a clear message
   instead of cascading.
+- **makedrive.conf reorganized:** the sections edited routinely (build
+  types, then installer image definitions, newest first) now lead the
+  file, with the frozen diagnostic definitions and the static datefix
+  script at the end. Section order has no effect on behavior.
 - **Documentation:** the user guide's changelog now lives entirely in
   RELEASE_HISTORY.md, the makedrive.conf trust boundary is stated
   explicitly under Security Considerations, and stale descriptions

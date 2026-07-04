@@ -174,11 +174,11 @@ without touching the script.
 
 makedrive.conf defines:
 
-- **Image definitions:** one block of variables per installer, keyed by a
-  unique prefix (for example `inst2600u`). Each block sets the DMG path,
-  the deploy type, display name, final volume name, partition size and
-  filesystem, the macOS build number to verify against, and the label shown
-  in the add-image menu.
+- **Image definitions:** one block of variables per image, installers and
+  diagnostics alike, keyed by a unique prefix (for example `inst2600u`).
+  Each block sets the DMG path, the deploy type, display name, final
+  volume name, partition size and filesystem, the macOS build number to
+  verify against, and the label shown in the add-image menu.
 - **Build types:** the groupings offered when you build a drive (see
   [Building Install Drives](#building-install-drives)).
 - **Catalog URLs:** the Apple software-update catalog index URLs makedrive
@@ -272,7 +272,8 @@ for you:
 
 1. Download or place the macOS installer app into `/Applications`. If it
    launches automatically, quit it.
-2. In makedrive (option 1), choose the matching installer entry.
+2. In makedrive, choose Main Menu option 1, then **macOS installers**, and
+   pick the matching installer entry.
 3. makedrive runs `createinstallmedia`, builds the final DMG, applies the
    volume icon, and copies the result into restorekit.
 

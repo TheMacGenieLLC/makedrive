@@ -1982,7 +1982,7 @@ add_menu_main () {
 
 		1 )
 			add_menu_image_list "installer" addMenuInstallers[@] \
-				"If you're copying an App Store OS installer into restorekit, ensure the installer application bundle is in /Applications before proceeding." \
+				"App Store installers must be in /Applications before they can be added." \
 				|| break
 			;;
 
@@ -2572,9 +2572,12 @@ deploy_restore_and_configure () {
 		echo "Installing the Apple Server Diagnostics package to the target volume."
 		echo ""
 		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
-		if [ -z "$srcDevice" ]; then
-			lastBuildError="Could not attach the $displayName image."
-			echo "Could not attach the $displayName image. The drive may be incomplete."
+		# The mount point can be empty even when the attach itself succeeds
+		# (nothing mountable in the image), so require both before using it.
+		if [ -z "$srcDevice" ] || [ -z "$srcMount" ]; then
+			[ -n "$srcDevice" ] && hdiutil detach -force "$srcDevice" 2>/dev/null
+			lastBuildError="Could not mount the $displayName image."
+			echo "Could not mount the $displayName image. The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -2584,7 +2587,7 @@ deploy_restore_and_configure () {
 		# The package renames the target volume itself, so the rename below
 		# starts from the name the package leaves behind.
 		if ! installer -verbose -allowUntrusted -pkg "$srcMount/$pkgName" -target "/Volumes/$startName"; then
-			hdiutil detach -quiet "$srcDevice" 2>/dev/null
+			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="The package install failed for $displayName."
 			echo ""
 			echo "The package install failed for $displayName. The drive may be incomplete."
@@ -2592,7 +2595,7 @@ deploy_restore_and_configure () {
 			disp_pause_for_input
 			return 2
 		fi
-		hdiutil detach -quiet "$srcDevice" 2>/dev/null
+		hdiutil detach -force "$srcDevice" 2>/dev/null
 		renameSource="$pkgTgtVolName"
 		;;
 
@@ -2600,15 +2603,18 @@ deploy_restore_and_configure () {
 		echo "Cloning the contents of the disk image to the target volume."
 		echo ""
 		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
-		if [ -z "$srcDevice" ]; then
-			lastBuildError="Could not attach the $displayName image."
-			echo "Could not attach the $displayName image. The drive may be incomplete."
+		# The mount point can be empty even when the attach itself succeeds
+		# (nothing mountable in the image), so require both before using it.
+		if [ -z "$srcDevice" ] || [ -z "$srcMount" ]; then
+			[ -n "$srcDevice" ] && hdiutil detach -force "$srcDevice" 2>/dev/null
+			lastBuildError="Could not mount the $displayName image."
+			echo "Could not mount the $displayName image. The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
 		fi
 		if ! cp -R "$srcMount/" "/Volumes/$startName/"; then
-			hdiutil detach -quiet "$srcDevice" 2>/dev/null
+			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="Cloning $displayName onto the target volume failed."
 			echo ""
 			echo "Cloning $displayName onto the target volume failed. The drive may be incomplete."
@@ -2616,7 +2622,7 @@ deploy_restore_and_configure () {
 			disp_pause_for_input
 			return 2
 		fi
-		hdiutil detach -quiet "$srcDevice" 2>/dev/null
+		hdiutil detach -force "$srcDevice" 2>/dev/null
 		renameSource="$startName"
 		;;
 
