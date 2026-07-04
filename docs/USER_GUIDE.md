@@ -104,8 +104,9 @@ Once authenticated, the password isn't requested again for the rest of the
 session, no matter how many drives you image.
 
 If a DMG that one of your configurations expects is missing from
-restorekit, a notice listing the missing files appears above the Main Menu.
-Add the missing installers (Main Menu option 1) and the notice clears.
+restorekit, a short notice appears above the Main Menu. The add image menu
+(Main Menu option 1) lists exactly which files are missing; add them and
+the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
 empty one so you can start from scratch and add images from within the
@@ -118,7 +119,7 @@ script.
 ```
 Welcome to makedrive's Main Menu.
 
-1. Add installer from local file
+1. Add image from local file
 2. Download installer from Apple
 3. Compress and scan DMGs for restore
 4. Build your install drive
@@ -128,11 +129,13 @@ Welcome to makedrive's Main Menu.
 X. Exit makedrive
 ```
 
-- **1. Add installer from local file.** Verifies an installer (by volume
-  name and macOS build number) and copies it into the correct place in
-  restorekit, then compresses and scans it for restore. Use this for 10.9
-  Mavericks (which has no Apple-hosted download source) or for any
-  installer you already have.
+- **1. Add image from local file.** Opens a chooser split between macOS
+  installers and diagnostic images, and shows exactly which configured
+  images are still missing from restorekit. Each image is verified (by
+  volume name and, for installers, macOS build number) and copied into the
+  correct place in restorekit, then compressed and scanned for restore.
+  Use this for 10.9 Mavericks (which has no Apple-hosted download source)
+  or for any image you already have.
 - **2. Download installer from Apple.** Fetches the Apple software-update
   catalog, lists all available macOS installers (10.7 through current,
   except 10.9), and downloads the one you choose directly from Apple. The
@@ -218,19 +221,33 @@ the change above the Main Menu.
 
 makedrive adds images into restorekit from within the script, which is
 strongly preferred over arranging the folder by hand. From the Main Menu
-choose option 1 to see the list of installers makedrive knows how to add:
+choose option 1. The screen that opens lists any images your configuration
+still expects, then asks which kind of image you're adding:
 
 ```
-Choose the software you'd like to add to the restorekit folder:
+Choose the type of image you'd like to add to the restorekit folder:
+
+ 1. macOS installers
+
+ 2. Diagnostics (ASD, AXD, and the Blank Board Serializer)
+
+ X. Exit Image Installer
+```
+
+Choosing macOS installers lists every installer makedrive knows how to add:
+
+```
+Choose the installer you'd like to add to the restorekit folder:
 
  1. 10.3.7 PPC Install                   12. 26.x App Store Install
  2. 10.4.7 PPC Install                   13. 27.x App Store Install
  ...
+ R. Return to the image type menu
  X. Exit Image Installer
 ```
 
-(The exact list is defined in makedrive.conf and reflects the macOS
-versions you support.)
+(The exact lists are defined in makedrive.conf and reflect the macOS
+versions and diagnostics you support.)
 
 Depending on the image, makedrive either processes an App Store installer
 already in `/Applications` (see
@@ -400,7 +417,7 @@ Diagnostics (ASD), Apple Server Diagnostics (AXD), and the AST Blank Board
 Serializer for Intel Macs through the 2015 model years. Apple discontinued
 these tools long ago and no longer distributes them, so makedrive expects
 you to supply the disk images from your own archive. Add them through Main
-Menu option 1 like any other image; each one is verified by volume name,
+Menu option 1 under **Diagnostics**; each one is verified by volume name,
 then compressed and scanned for restore.
 
 Every ASD version is a pair of images: an EFI volume holding the
@@ -410,8 +427,8 @@ pair, the AXD server diagnostics, and the serializer on a single Apple
 Partition Map disk. Every Intel Mac these tools support boots APM media,
 and `asr` has historically been unreliable restoring diagnostic sets onto
 GUID disks with this many volumes. The build expects each image in the
-list to be present in restorekit, and the missing-file notice above the
-Main Menu shows what still needs to be added.
+list to be present in restorekit, and the add image menu shows what still
+needs to be added.
 
 Most diagnostic volumes restore with `asr` just like installers. The AXD
 3X104 through 3X109 volumes are different: Apple shipped those as

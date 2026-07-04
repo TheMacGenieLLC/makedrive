@@ -16,6 +16,10 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   certificate), and the serializer volume is cloned in place. Diagnostic
   images are excluded from the USB and SD card restore path, which stays
   installer only.
+- **Add image menu reorganized:** Main Menu option 1 now opens a chooser
+  split between macOS installers and diagnostic images, with the full list
+  of images missing from restorekit shown there. The Main Menu shows a
+  one-line notice instead of the complete list.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.

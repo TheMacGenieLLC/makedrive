@@ -1534,7 +1534,7 @@ download_fetch_and_process () {
 
 	rm -rf "$tmpDir"
 
-	# Dispatch to the standard add-installer pipeline - same calls as add_menu_main
+	# Dispatch to the standard add-installer pipeline - same calls as add_menu_image_list
 	case "$addFunc" in
 
 	COPY_SINGLE )
@@ -1948,37 +1948,29 @@ download_installer_menu () {
 
 # ------------------------------------------------------------------------------
 # add_menu_main
+# Top level of the image installer: shows which configured images are still
+# missing from restorekit and routes to the installer or diagnostics list.
 # ------------------------------------------------------------------------------
 add_menu_main () {
 
-	local addMenuIdx addMenuLabelVar addMenuKey addFuncVar instPath
-	local appPathVar newImageVolSizeVar finalNameVar dispNameVar volNameVar buildNumVar sourcePathVar
-	local addMenuLabels=()
-
 	imageToAdd=""
-
-	for (( addMenuIdx = 0 ; addMenuIdx < ${#addMenuOrder[@]} ; addMenuIdx++ )); do
-		addMenuLabelVar="${addMenuOrder[$addMenuIdx]}MenuLabel"
-		addMenuLabels+=( "$(printf "%2d. %s" $(( addMenuIdx + 1 )) "${!addMenuLabelVar}")" )
-	done
 
 	while [ "$imageToAdd" == "" ]; do
 
 		disp_print_header
 
-		echo "Choose the software you'd like to add to the restorekit folder:"
+		check_file_presence
+		disp_print_missing_images
+
+		echo "Choose the type of image you'd like to add to the restorekit folder:"
 		echo ""
-
-		disp_print_two_column_list addMenuLabels[@]
-
+		echo " 1. macOS installers"
+		echo ""
+		echo " 2. Diagnostics (ASD, AXD, and the Blank Board Serializer)"
 		echo ""
 		echo " X. Exit Image Installer"
 		echo ""
-		echo "If you need to copy an App Store OS installer into restorekit, ensure the"
-		echo "installer application bundle is in /Applications before proceeding."
-		echo ""
-		echo "Enter the number or letter for the software you'd like to add into the"
-		echo "restorekit folder and hit return: "
+		echo "Enter the number or letter for the list you'd like to see and hit return: "
 		echo ""
 		read -r imageToAdd
 
@@ -1988,12 +1980,95 @@ add_menu_main () {
 			break
 			;;
 
-		* )
-			if [ "$imageToAdd" -ge 1 ] 2>/dev/null && \
-			   [ "$imageToAdd" -le "${#addMenuOrder[@]}" ] 2>/dev/null; then
+		1 )
+			add_menu_image_list "installer" addMenuInstallers[@] \
+				"If you're copying an App Store OS installer into restorekit, ensure the installer application bundle is in /Applications before proceeding." \
+				|| break
+			;;
 
-				addMenuIdx=$(( imageToAdd - 1 ))
-				addMenuKey="${addMenuOrder[$addMenuIdx]}"
+		2 )
+			add_menu_image_list "diagnostic image" addMenuDiagnostics[@] \
+				"Diagnostic images are supplied from your own archive as single DMG files." \
+				|| break
+			;;
+
+		esac
+
+		imageToAdd=""
+
+	done
+
+}
+
+
+# ------------------------------------------------------------------------------
+# add_menu_image_list
+# Lists one category of configured images and dispatches the chosen entry to
+# its AddFunc. Returns 0 when the user goes back to the image type menu and 1
+# when they exit the image installer entirely.
+#
+# $1 - Category word used in the menu prompt (e.g. "installer")
+# $2 - Name of array variable holding the image keys to list
+# $3 - One-line note printed below the menu
+# ------------------------------------------------------------------------------
+add_menu_image_list () {
+
+	local categoryWord="$1"
+	local menuKeys=("${!2}")
+	local categoryNote="$3"
+	local addMenuIdx addMenuLabelVar addMenuKey addFuncVar instPath imageChoice
+	local appPathVar newImageVolSizeVar finalNameVar dispNameVar volNameVar buildNumVar sourcePathVar
+	local addMenuLabels=()
+
+	if [ "${#menuKeys[@]}" -eq 0 ]; then
+		disp_print_header
+		echo "No ${categoryWord} entries are configured in makedrive.conf."
+		echo ""
+		disp_pause_for_input
+		return 0
+	fi
+
+	for (( addMenuIdx = 0 ; addMenuIdx < ${#menuKeys[@]} ; addMenuIdx++ )); do
+		addMenuLabelVar="${menuKeys[$addMenuIdx]}MenuLabel"
+		addMenuLabels+=( "$(printf "%2d. %s" $(( addMenuIdx + 1 )) "${!addMenuLabelVar}")" )
+	done
+
+	while true; do
+
+		disp_print_header
+
+		echo "Choose the $categoryWord you'd like to add to the restorekit folder:"
+		echo ""
+
+		disp_print_two_column_list addMenuLabels[@]
+
+		echo ""
+		echo " R. Return to the image type menu"
+		echo " X. Exit Image Installer"
+		echo ""
+		echo "$categoryNote"
+		echo ""
+		echo "Enter the number or letter for the software you'd like to add into the"
+		echo "restorekit folder and hit return: "
+		echo ""
+		read -r imageChoice
+
+		case "$imageChoice" in
+
+		[Rr] )
+			return 0
+			;;
+
+		[Xx] )
+			return 1
+			;;
+
+		* )
+			if [ "$imageChoice" -ge 1 ] 2>/dev/null && \
+			   [ "$imageChoice" -le "${#menuKeys[@]}" ] 2>/dev/null; then
+
+				addMenuIdx=$(( imageChoice - 1 ))
+				addMenuKey="${menuKeys[$addMenuIdx]}"
 
 				addFuncVar="${addMenuKey}AddFunc"
 				instPath="${!addMenuKey}"
@@ -2052,8 +2127,6 @@ add_menu_main () {
 			;;
 
 		esac
-
-		imageToAdd=""
 
 	done
 
@@ -2455,8 +2528,9 @@ build_clean_vol_folder () {
 # $2 - displayName
 # $3 - imagePath   (source DMG)
 # $4 - startName   (volume name of the prepared partition; ASR target)
-# $5 - asrName     (volume name after ASR: VolName for INST-A and ASD-EFI,
-#                   FinalName for GENERIC; unused for AXD-PKG and COPY)
+# $5 - volName     (conf VolName: the name INST-A and ASD-EFI images restore
+#                   with; empty for GENERIC, whose images already restore as
+#                   finalName; unused for AXD-PKG and COPY)
 # $6 - finalName   (desired final volume name shown to the user)
 # $7 - pkgName     (AXD-PKG only: package filename inside the mounted source DMG)
 # $8 - pkgTgtVolName (AXD-PKG only: name Apple's package gives the target volume)
@@ -2471,12 +2545,12 @@ deploy_restore_and_configure () {
 	local displayName="$2"
 	local imagePath="$3"
 	local startName="$4"
-	local asrName="$5"
+	local volName="$5"
 	local finalName="$6"
 	local pkgName="$7"
 	local pkgTgtVolName="$8"
 	local hadError=0
-	local renameSource="$asrName"
+	local renameSource="$finalName"
 	local srcDevice srcMount
 
 	disp_print_header
@@ -2558,6 +2632,12 @@ deploy_restore_and_configure () {
 			return 2
 		fi
 		echo ""
+		# INST-A and ASD-EFI images restore with their source volume name,
+		# which the rename below moves to finalName. GENERIC images already
+		# restore as finalName.
+		case "$deployType" in
+		INST-A | ASD-EFI ) renameSource="$volName" ;;
+		esac
 		;;
 
 	esac
@@ -2641,7 +2721,7 @@ build_deploy_volume () {
 	local volumesToDeploy=("${!1}")
 	local deployError=0
 	local volumeDeployCounter key varLookup
-	local deployType displayName imagePath startName asrName finalName pkgName pkgTgtVolName
+	local deployType displayName imagePath startName volName finalName pkgName pkgTgtVolName
 
 	for (( volumeDeployCounter = 0 ; volumeDeployCounter < ${#volumesToDeploy[@]} ; volumeDeployCounter++ )); do
 
@@ -2685,26 +2765,16 @@ build_deploy_volume () {
 		varLookup="${key}";            imagePath="${!varLookup}"
 		varLookup="${key}StartName";   startName="${!varLookup}"
 		varLookup="${key}FinalName";   finalName="${!varLookup}"
-		# INST-A and ASD-EFI DMGs restore with the source volume name (e.g.
-		# "Mac OS X Install ESD" or "ASD EFI 3S162"), which must be renamed to
-		# FinalName. GENERIC DMGs already have FinalName as their volume name
-		# so VolName is not stored in conf for them.
-		case "$deployType" in
-		INST-A | ASD-EFI )
-			varLookup="${key}VolName";  asrName="${!varLookup}"
-			;;
-		* )
-			asrName="$finalName"
-			;;
-		esac
-		# Package fields are only defined for AXD-PKG entries; the lookups
-		# expand empty for every other deploy type.
+		# VolName and the package fields are only defined for the deploy
+		# types that use them; the lookups expand empty for every other
+		# type, and deploy_restore_and_configure decides what applies.
+		varLookup="${key}VolName";        volName="${!varLookup}"
 		varLookup="${key}PkgName";        pkgName="${!varLookup}"
 		varLookup="${key}PkgTgtVolName";  pkgTgtVolName="${!varLookup}"
 
 		lastBuildError=""
 		deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
-			"$startName" "$asrName" "$finalName" "$pkgName" "$pkgTgtVolName"
+			"$startName" "$volName" "$finalName" "$pkgName" "$pkgTgtVolName"
 		local rc=$?
 		if [ "$rc" = "2" ]; then
 			deployError=1
@@ -2918,11 +2988,10 @@ quick_deploy_menu_choose_image () {
 	local menuLabels=()
 
 	# Build arrays of all configured installer images and matching display
-	# labels once. Diagnostic images (non-inst keys) are excluded: a quick
-	# deploy target holds one volume, and diagnostic sets are only useful as
-	# the multi-volume pairs a full diagnostics build lays down.
-	for key in "${addMenuOrder[@]}"; do
-		[[ "$key" == inst* ]] || continue
+	# labels once. Diagnostic images are excluded: a quick deploy target
+	# holds one volume, and diagnostic sets are only useful as the
+	# multi-volume pairs a full diagnostics build lays down.
+	for key in "${addMenuInstallers[@]}"; do
 		dispNameVar="${key}DispName"
 		menuLabels+=( "$(printf "%2d. %s" "$menuIndex" "${!dispNameVar}")" )
 		deployableImages+=("$key")
@@ -3026,7 +3095,7 @@ quick_deploy_start () {
 		fi
 
 		local key="$quickDeployImageKey"
-		local varLookup deployType displayName imagePath startName asrName finalName volType
+		local varLookup deployType displayName imagePath startName volName finalName volType
 		local keyRoot deployScheme
 
 		varLookup="${key}DeployType";  deployType="${!varLookup}"
@@ -3035,11 +3104,7 @@ quick_deploy_start () {
 		varLookup="${key}StartName";   startName="${!varLookup}"
 		varLookup="${key}FinalName";   finalName="${!varLookup}"
 		varLookup="${key}VolType";     volType="${!varLookup}"
-		if [ "$deployType" = "INST-A" ]; then
-			varLookup="${key}VolName";  asrName="${!varLookup}"
-		else
-			asrName="$finalName"
-		fi
+		varLookup="${key}VolName";     volName="${!varLookup}"
 
 		# Deploy 10.5 and earlier onto APM media: PowerPC Macs can only boot
 		# from APM, and the Intel Macs those releases support boot APM
@@ -3080,7 +3145,7 @@ quick_deploy_start () {
 
 		lastBuildError=""
 		deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
-			"$startName" "$asrName" "$finalName"
+			"$startName" "$volName" "$finalName"
 		local deployRC=$?
 
 		disp_print_header
@@ -3107,37 +3172,44 @@ quick_deploy_start () {
 
 # ------------------------------------------------------------------------------
 # check_file_presence
-# Runs the track for checking to see if images are present in restorekit.
+# Builds the list of configured images missing from restorekit into the
+# missingImagesList global. The Main Menu prints a one-line notice when the
+# list is non-empty; the add image menu prints the full list through
+# disp_print_missing_images.
 # ------------------------------------------------------------------------------
 check_file_presence () {
 
-	local missingDMGs=""
 	local imagePresenceCounter
+
+	missingImagesList=""
 
 	# Run the loop through the imageFilePaths array until there are no more
 	# images to scan in the list (array).
 	for (( imagePresenceCounter = 0 ; imagePresenceCounter < ${#imageFilePaths[@]} ; imagePresenceCounter++ )); do
 
 		if [ ! -e "${imageFilePaths[$imagePresenceCounter]}" ]; then
-			missingDMGs+="${imageFilePaths[$imagePresenceCounter]##*/} \n"
+			missingImagesList+="${imageFilePaths[$imagePresenceCounter]##*/} \n"
 		fi
-		
+
 	done
-	
-	if [ "$missingDMGs" != "" ]; then
-		
-		echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-		echo ""
-		echo "The following files are not present in restorekit:"
-		echo ""
-		echo -e "$missingDMGs" | rs -zet -g8
-		echo ""
-		echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-		echo ""
-	
-	fi
-	
-	missingDMGs=""
+
+	return 0
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_print_missing_images
+# Prints the full list of images missing from restorekit, as most recently
+# computed by check_file_presence. Prints nothing when the list is empty.
+# ------------------------------------------------------------------------------
+disp_print_missing_images () {
+
+	[ -z "$missingImagesList" ] && return 0
+
+	echo "The following images are not present in restorekit:"
+	echo ""
+	echo -e "$missingImagesList" | rs -zet -g8
+	echo ""
 
 	return 0
 }
@@ -3344,6 +3416,16 @@ main_menu () {
 		
 		check_file_presence
 
+		if [ -n "$missingImagesList" ]; then
+			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+			echo ""
+			echo "One or more images your configuration expects are missing from restorekit."
+			echo "Choose option 1 to see the list and add images."
+			echo ""
+			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+			echo ""
+		fi
+
 		if [ -n "$makeDriveSyncNotice" ]; then
 			echo "makedrive.conf updated for newer macOS releases: ${makeDriveSyncNotice}."
 			echo "Obtain the matching installer before adding it to the restorekit."
@@ -3352,7 +3434,7 @@ main_menu () {
 
 		echo "Welcome to makedrive's Main Menu."
 		echo ""
-		echo -e "\033[1m1. Add installer from local file\033[0m"
+		echo -e "\033[1m1. Add image from local file\033[0m"
 		echo ""
 		echo -e "\033[1m2. Download installer from Apple\033[0m"
 		echo ""
@@ -4467,8 +4549,25 @@ while IFS= read -r _menuKey; do
 	addMenuOrder+=( "$_menuKey" )
 done < <(grep -o '^[A-Za-z][A-Za-z0-9]*MenuLabel=' "$_makedrive_active_conf" | sed 's/MenuLabel=$//' | tail -r)
 unset _menuKey
+# addMenuInstallers and addMenuDiagnostics split addMenuOrder for the add
+# image sub-menus and the quick deploy chooser: installer keys carry the
+# inst prefix; every other key family is a diagnostic.
+addMenuInstallers=()
+addMenuDiagnostics=()
+for _key in "${addMenuOrder[@]}"; do
+	if [[ "$_key" == inst* ]]; then
+		addMenuInstallers+=( "$_key" )
+	else
+		addMenuDiagnostics+=( "$_key" )
+	fi
+done
+unset _key
+
+# imageFilePaths lists installers before diagnostics so presence and
+# compress/scan reporting leads with the images edited most often,
+# regardless of where each family sits in makedrive.conf.
 imageFilePaths=()
-for _key in "${addMenuOrder[@]}"; do imageFilePaths+=( "${!_key}" ); done
+for _key in "${addMenuInstallers[@]}" "${addMenuDiagnostics[@]}"; do imageFilePaths+=( "${!_key}" ); done
 unset _key
 
 # buildTypeNums (the registry of valid type numbers, in menu display order)
