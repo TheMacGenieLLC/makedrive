@@ -2451,12 +2451,15 @@ build_clean_vol_folder () {
 # disables Spotlight, and unmounts it. Called per-volume by build_deploy_volume
 # and directly by quick_deploy_start.
 #
-# $1 - deployType  (GENERIC or INST-A)
+# $1 - deployType  (GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)
 # $2 - displayName
 # $3 - imagePath   (source DMG)
 # $4 - startName   (volume name of the prepared partition; ASR target)
-# $5 - asrName     (volume name after ASR: VolName for INST-A, FinalName for GENERIC)
+# $5 - asrName     (volume name after ASR: VolName for INST-A and ASD-EFI,
+#                   FinalName for GENERIC; unused for AXD-PKG and COPY)
 # $6 - finalName   (desired final volume name shown to the user)
+# $7 - pkgName     (AXD-PKG only: package filename inside the mounted source DMG)
+# $8 - pkgTgtVolName (AXD-PKG only: name Apple's package gives the target volume)
 #
 # Uses globals:  diskNum, windowCloseSleepInSeconds, spotlightSleepInSeconds
 # Sets global:   lastBuildError
@@ -2470,7 +2473,11 @@ deploy_restore_and_configure () {
 	local startName="$4"
 	local asrName="$5"
 	local finalName="$6"
+	local pkgName="$7"
+	local pkgTgtVolName="$8"
 	local hadError=0
+	local renameSource="$asrName"
+	local srcDevice srcMount
 
 	disp_print_header
 
@@ -2482,30 +2489,100 @@ deploy_restore_and_configure () {
 	diskutil mountDisk "disk$diskNum"
 	sleep 2
 
-	echo "Restoring disk image to target volume."
-	echo ""
-	if ! asr restore --source "$imagePath" --target "/Volumes/$startName/" --erase --noprompt --noverify; then
-		lastBuildError="asr restore failed for $displayName."
-		echo ""
-		echo "asr restore failed for $displayName. The drive may be incomplete."
-		echo ""
-		disp_pause_for_input
-		return 2
-	fi
-	echo ""
+	# Get the image content onto the target volume. Most images restore with
+	# asr; AXD EFI volumes are populated by Apple's installer package, and
+	# images asr cannot restore are soft-cloned from a mounted copy instead.
+	case "$deployType" in
 
-	# Rename to final name (INST-A only; GENERIC images already carry finalName)
-	if [ "$asrName" != "$finalName" ]; then
-		if ! diskutil rename "/Volumes/$asrName" "$finalName" && [ "$hadError" = "0" ]; then
-			lastBuildError="Could not rename $asrName to $finalName."
+	AXD-PKG )
+		echo "Installing the Apple Server Diagnostics package to the target volume."
+		echo ""
+		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
+		if [ -z "$srcDevice" ]; then
+			lastBuildError="Could not attach the $displayName image."
+			echo "Could not attach the $displayName image. The drive may be incomplete."
+			echo ""
+			disp_pause_for_input
+			return 2
+		fi
+		# These packages were signed with certificates that expired years ago
+		# and were never re-issued, so the install requires -allowUntrusted.
+		# The package renames the target volume itself, so the rename below
+		# starts from the name the package leaves behind.
+		if ! installer -verbose -allowUntrusted -pkg "$srcMount/$pkgName" -target "/Volumes/$startName"; then
+			hdiutil detach -quiet "$srcDevice" 2>/dev/null
+			lastBuildError="The package install failed for $displayName."
+			echo ""
+			echo "The package install failed for $displayName. The drive may be incomplete."
+			echo ""
+			disp_pause_for_input
+			return 2
+		fi
+		hdiutil detach -quiet "$srcDevice" 2>/dev/null
+		renameSource="$pkgTgtVolName"
+		;;
+
+	COPY )
+		echo "Cloning the contents of the disk image to the target volume."
+		echo ""
+		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
+		if [ -z "$srcDevice" ]; then
+			lastBuildError="Could not attach the $displayName image."
+			echo "Could not attach the $displayName image. The drive may be incomplete."
+			echo ""
+			disp_pause_for_input
+			return 2
+		fi
+		if ! cp -R "$srcMount/" "/Volumes/$startName/"; then
+			hdiutil detach -quiet "$srcDevice" 2>/dev/null
+			lastBuildError="Cloning $displayName onto the target volume failed."
+			echo ""
+			echo "Cloning $displayName onto the target volume failed. The drive may be incomplete."
+			echo ""
+			disp_pause_for_input
+			return 2
+		fi
+		hdiutil detach -quiet "$srcDevice" 2>/dev/null
+		renameSource="$startName"
+		;;
+
+	* )
+		echo "Restoring disk image to target volume."
+		echo ""
+		if ! asr restore --source "$imagePath" --target "/Volumes/$startName/" --erase --noprompt --noverify; then
+			lastBuildError="asr restore failed for $displayName."
+			echo ""
+			echo "asr restore failed for $displayName. The drive may be incomplete."
+			echo ""
+			disp_pause_for_input
+			return 2
+		fi
+		echo ""
+		;;
+
+	esac
+
+	# Rename to final name. GENERIC images already carry finalName; INST-A and
+	# ASD-EFI volumes restore with their source volume name, AXD-PKG volumes
+	# carry the name Apple's package set, and COPY volumes keep startName.
+	if [ "$renameSource" != "$finalName" ]; then
+		if ! diskutil rename "/Volumes/$renameSource" "$finalName" && [ "$hadError" = "0" ]; then
+			lastBuildError="Could not rename $renameSource to $finalName."
 			hadError=1
-			echo "Warning: volume rename failed for $asrName. Drive may not be fully set up."
+			echo "Warning: volume rename failed for $renameSource. Drive may not be fully set up."
 		fi
 	fi
 
-	# Bless volume for boot capability.
-	local coreServices="/Volumes/$finalName/System/Library/CoreServices"
-	if ! bless -folder "$coreServices" -label "$finalName"; then
+	# Bless volume for boot capability. Diagnostic EFI and serializer volumes
+	# keep their boot files at the volume root, so the root folder is blessed
+	# for them; everything else blesses the standard CoreServices folder.
+	local blessFolder="/Volumes/$finalName/System/Library/CoreServices"
+	case "$deployType" in
+	ASD-EFI | AXD-PKG | COPY )
+		blessFolder="/Volumes/$finalName"
+		;;
+	esac
+	if ! bless -folder "$blessFolder" -label "$finalName"; then
 		[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
 		hadError=1
 		echo "Warning: bless failed for $finalName. Volume may not be bootable."
@@ -2564,7 +2641,7 @@ build_deploy_volume () {
 	local volumesToDeploy=("${!1}")
 	local deployError=0
 	local volumeDeployCounter key varLookup
-	local deployType displayName imagePath startName asrName finalName
+	local deployType displayName imagePath startName asrName finalName pkgName pkgTgtVolName
 
 	for (( volumeDeployCounter = 0 ; volumeDeployCounter < ${#volumesToDeploy[@]} ; volumeDeployCounter++ )); do
 
@@ -2608,18 +2685,26 @@ build_deploy_volume () {
 		varLookup="${key}";            imagePath="${!varLookup}"
 		varLookup="${key}StartName";   startName="${!varLookup}"
 		varLookup="${key}FinalName";   finalName="${!varLookup}"
-		# INST-A DMGs restore with the source volume name (e.g. "Mac OS X Install ESD"),
-		# which must be renamed to FinalName. GENERIC DMGs already have FinalName as
-		# their volume name so VolName is not stored in conf for them.
-		if [ "$deployType" = "INST-A" ]; then
+		# INST-A and ASD-EFI DMGs restore with the source volume name (e.g.
+		# "Mac OS X Install ESD" or "ASD EFI 3S162"), which must be renamed to
+		# FinalName. GENERIC DMGs already have FinalName as their volume name
+		# so VolName is not stored in conf for them.
+		case "$deployType" in
+		INST-A | ASD-EFI )
 			varLookup="${key}VolName";  asrName="${!varLookup}"
-		else
+			;;
+		* )
 			asrName="$finalName"
-		fi
+			;;
+		esac
+		# Package fields are only defined for AXD-PKG entries; the lookups
+		# expand empty for every other deploy type.
+		varLookup="${key}PkgName";        pkgName="${!varLookup}"
+		varLookup="${key}PkgTgtVolName";  pkgTgtVolName="${!varLookup}"
 
 		lastBuildError=""
 		deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
-			"$startName" "$asrName" "$finalName"
+			"$startName" "$asrName" "$finalName" "$pkgName" "$pkgTgtVolName"
 		local rc=$?
 		if [ "$rc" = "2" ]; then
 			deployError=1
@@ -2832,8 +2917,12 @@ quick_deploy_menu_choose_image () {
 	local deployableImages=()
 	local menuLabels=()
 
-	# Build arrays of all configured images and matching display labels once
+	# Build arrays of all configured installer images and matching display
+	# labels once. Diagnostic images (non-inst keys) are excluded: a quick
+	# deploy target holds one volume, and diagnostic sets are only useful as
+	# the multi-volume pairs a full diagnostics build lays down.
 	for key in "${addMenuOrder[@]}"; do
+		[[ "$key" == inst* ]] || continue
 		dispNameVar="${key}DispName"
 		menuLabels+=( "$(printf "%2d. %s" "$menuIndex" "${!dispNameVar}")" )
 		deployableImages+=("$key")
@@ -4022,13 +4111,19 @@ preflight_check_conf () {
 				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
 			done
 			;;
-		INST-A )
+		INST-A | ASD-EFI | COPY )
 			_var="${key}VolName"
 			[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
 			;;
+		AXD-PKG )
+			for suffix in VolName PkgName PkgTgtVolName; do
+				_var="${key}${suffix}"
+				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
+			done
+			;;
 		"" ) ;;  # already reported as not set above
 		* )
-			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC or INST-A)\n"
+			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)\n"
 			;;
 		esac
 
@@ -4361,15 +4456,16 @@ fi
 # they can't drift out of sync with the image/build-type blocks that back them.
 # ------------------------------------------------------------------------------
 
-# addMenuOrder lists installer keys oldest to newest, derived from every
-# instXXXXMenuLabel key in makedrive.conf (reversed, since new blocks are added
-# at the top of that file) so an image block can be added or removed there
-# without also editing this list. imageFilePaths derives from it for
+# addMenuOrder lists image keys oldest to newest, derived from every MenuLabel
+# key in makedrive.conf (reversed, since new blocks are added at the top of
+# that file) so an image block can be added or removed there without also
+# editing this list. Installer and diagnostic key families alike are
+# discovered this way. imageFilePaths derives from it for
 # presence/compression/scan checks.
 addMenuOrder=()
 while IFS= read -r _menuKey; do
 	addMenuOrder+=( "$_menuKey" )
-done < <(grep -o '^inst[A-Za-z0-9]*MenuLabel=' "$_makedrive_active_conf" | sed 's/MenuLabel=$//' | tail -r)
+done < <(grep -o '^[A-Za-z][A-Za-z0-9]*MenuLabel=' "$_makedrive_active_conf" | sed 's/MenuLabel=$//' | tail -r)
 unset _menuKey
 imageFilePaths=()
 for _key in "${addMenuOrder[@]}"; do imageFilePaths+=( "${!_key}" ); done

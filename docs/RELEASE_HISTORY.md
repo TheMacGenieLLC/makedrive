@@ -7,6 +7,15 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ### Build 203 - 2026-07-04
 
+- **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
+  Server Diagnostics, and the AST Blank Board Serializer are back as
+  configuration-defined images with a dedicated Apple Partition Map build
+  type covering Intel Macs through the 2015 model years. ASD images are
+  added and restored like any other image, AXD EFI volumes are populated
+  by Apple's own installer package (accepting its long-expired signing
+  certificate), and the serializer volume is cloned in place. Diagnostic
+  images are excluded from the USB and SD card restore path, which stays
+  installer only.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.

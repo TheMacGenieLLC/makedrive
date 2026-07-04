@@ -20,6 +20,7 @@
 - [Downloading Installers from Apple](#downloading-installers-from-apple)
 - [Volume Icons](#volume-icons)
 - [Building Install Drives](#building-install-drives)
+- [Diagnostic Drives](#diagnostic-drives)
 - [Restoring to USB or SD Card](#restoring-to-usb-or-sd-card)
 - [Lion, Mountain Lion, and Mavericks Pre-flight](#lion-mountain-lion-and-mavericks-pre-flight)
 - [Pushover Notifications](#pushover-notifications)
@@ -46,9 +47,11 @@ is tedious and error-prone. makedrive makes it consistent and repeatable,
 and lets you re-purpose a drive quickly when a new macOS version ships.
 
 > **Note for users of older makedrive releases:** makedrive was historically
-> a diagnostic and triage tool tied to service provider workflows. Those
-> diagnostic features have been removed, and the current tool is focused on
-> building macOS install drives.
+> a diagnostic and triage tool tied to service provider workflows. The
+> current tool is focused on building macOS install drives, but the classic
+> diagnostic images (ASD, AXD, and the Blank Board Serializer) can still be
+> added from your own archive and built onto a dedicated diagnostics drive.
+> See [Diagnostic Drives](#diagnostic-drives).
 
 ---
 
@@ -355,6 +358,7 @@ Main Menu option 4 builds a drive. First choose a build type:
  1. Apple Silicon & Intel Installers
  2. Older PPC & Intel 10.3-10.11 Installers
  3. DataDrive Only
+ 4. Intel ASD & AXD Diagnostics
   R. Return to disk build menu
   X. Return to the main menu
 ```
@@ -389,6 +393,36 @@ like to image another disk.
 
 ---
 
+## Diagnostic Drives
+
+makedrive can build a dedicated diagnostics drive carrying Apple Service
+Diagnostics (ASD), Apple Server Diagnostics (AXD), and the AST Blank Board
+Serializer for Intel Macs through the 2015 model years. Apple discontinued
+these tools long ago and no longer distributes them, so makedrive expects
+you to supply the disk images from your own archive. Add them through Main
+Menu option 1 like any other image; each one is verified by volume name,
+then compressed and scanned for restore.
+
+Every ASD version is a pair of images: an EFI volume holding the
+firmware-level diagnostic and an OS volume holding the full macOS-based
+test suite. The **Intel ASD & AXD Diagnostics** build type lays down every
+pair, the AXD server diagnostics, and the serializer on a single Apple
+Partition Map disk. Every Intel Mac these tools support boots APM media,
+and `asr` has historically been unreliable restoring diagnostic sets onto
+GUID disks with this many volumes. The build expects each image in the
+list to be present in restorekit, and the missing-file notice above the
+Main Menu shows what still needs to be added.
+
+Most diagnostic volumes restore with `asr` just like installers. The AXD
+3X104 through 3X109 volumes are different: Apple shipped those as
+installer packages, so makedrive runs the package from the source image
+against the target volume, telling the installer to accept the package's
+signing certificate, which expired years ago and was never renewed. The
+Blank Board Serializer can't be restored with `asr` at all, so its
+contents are cloned onto the target volume instead.
+
+---
+
 ## Restoring to USB or SD Card
 
 Main Menu option 5 restores a single installer image to a USB flash drive,
@@ -401,10 +435,12 @@ This is the fastest way to hand someone a bootable installer for a specific
 macOS version, or to quickly re-purpose a small drive without going through
 a full build.
 
-All configured image types appear in the chooser: both **GENERIC**
-(createinstallmedia-based) and **INST-A** (pre-built or legacy) images. The
-same boot-disk protection applies, so makedrive won't let you erase the
-disk you're currently running from.
+Every configured macOS installer appears in the chooser: both **GENERIC**
+(createinstallmedia-based) and **INST-A** (pre-built or legacy) images.
+Diagnostic images don't appear here, since ASD only boots usefully as an
+EFI and OS pair; use the diagnostics build type to put those on a drive.
+The same boot-disk protection applies, so makedrive won't let you erase
+the disk you're currently running from.
 
 Media is partitioned to match the age of the installer. Images for Mac OS
 X 10.5 Leopard and earlier are restored onto Apple Partition Map media,
