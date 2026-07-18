@@ -1,7 +1,7 @@
 # makedrive User Guide
 
 **Version:** Build 203  
-**Updated:** 2026-07-04  
+**Updated:** 2026-07-18 
 **Author:** Ian Williams  
 **Contact:** [ian@themacgenie.com](mailto:ian@themacgenie.com)  
 **Project:** [https://makedrive.com](https://makedrive.com)
@@ -292,6 +292,11 @@ provided, makedrive mounts it, locates the package automatically, and
 unmounts it when finished. makedrive assembles the installer app from the
 package and continues as normal. The package's obsolete installation
 scripts, which fail on current systems, are bypassed entirely.
+
+Mavericks (10.9) uses the same flat-package layout, and while Apple never
+published a package for it, makedrive accepts one from your own archive
+the same way when the installer app isn't in `/Applications`. It goes
+through the same version check and build verification as the others.
 
 Supply only the genuine Apple-provided package. makedrive checks the
 package's macOS version before assembling it and verifies the exact build

@@ -5,7 +5,7 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
-### Build 203 - 2026-07-04
+### Build 203 - 2026-07-18
 
 - **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
   Server Diagnostics, and the AST Blank Board Serializer are back as
@@ -16,6 +16,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   certificate), and the serializer volume is cloned in place. Diagnostic
   images are excluded from the USB and SD card restore path, which stays
   installer only.
+- **Mavericks package assembly:** a 10.9 installer flat package in Apple's
+  layout is now accepted through the same package assembly, version check,
+  and build verification as 10.10 through 10.12 when the installer app is
+  not in /Applications. Apple never published such a package, so the
+  download menu still excludes 10.9; this covers archival copies.
 - **Mounted-source deploys hardened:** the AXD package install and the
   serializer clone confirm the source image actually mounted before using
   it, and force-detach the source when finished or on failure, so an image

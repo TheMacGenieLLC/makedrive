@@ -13,8 +13,6 @@ you can boot or re-install almost any Mac from one drive.
 > triage tool. Those diagnostic features have been removed, and it's now
 > focused on building macOS install drives.
 
-<p align="center"><a href="https://everyexpert.com/TheMacGenie">Get help from The Mac Genie on EveryExpert</a></p>
-
 ---
 
 ## Features

@@ -11,7 +11,7 @@
 # https://makedrive.com
 #
 # Current script version:
-currentVersion="2026-07-04 - Build 203"
+currentVersion="2026-07-18 - Build 203"
 
 # Global Variable Declarations
 bootDiskID=""
@@ -1129,30 +1129,28 @@ add_mas_createinstallmedia_mav () {
 	local isMavericks=0
 	case "$installerBuild" in 13*) isMavericks=1 ;; esac
 
-	# For 10.10-10.12, the installer is no longer available through the Mac App Store
-	# and must be sourced from Apple's direct-download flat package. If the app is not
-	# already in /Applications, offer pkg extraction via add_installer_from_pkg.
-	# Sierra on Golden Gate has the additional constraint that its JavaScript distribution
-	# scripts are rejected by the host's pkg engine - surfaced here so the user
-	# understands why the MAS cannot be used, before the pkg prompt appears.
-	# Mavericks (10.9) has no canonical Apple package source; the app must already
-	# be present in /Applications.
+	# For 10.9-10.12, the installer is no longer available through the Mac App
+	# Store and must be sourced from a flat installer package. If the app is
+	# not already in /Applications, offer pkg extraction via
+	# add_installer_from_pkg. Apple never published a package for Mavericks
+	# (10.9), so its note sets expectations: a package in Apple's flat layout
+	# works, but the user supplies it from their own archive. Sierra on Golden
+	# Gate has the additional constraint that its JavaScript distribution
+	# scripts are rejected by the host's pkg engine - surfaced so the user
+	# understands why the MAS cannot be used. Both notes pause for input,
+	# since the pkg prompt clears the screen when it draws its own header.
 	local _pkgExtracted=0
 	if [ ! -d "$1" ]; then
 
 		if [ "$isMavericks" = "1" ]; then
 			disp_print_header
-			echo "Install OS X Mavericks is not in /Applications and has no canonical"
-			echo "package source. To add this installer:"
-			echo ""
-			echo "  Option 1: Mount an existing 10.9.5 createinstallmedia image, copy"
-			echo "             Install OS X Mavericks.app to /Applications, and try again."
-			echo ""
-			echo "  Option 2: Place a pre-built 10.9.5 installer DMG directly into"
-			echo "             the restorekit Install folder."
+			echo "Install OS X Mavericks is not in /Applications. Apple never published"
+			echo "a package source for 10.9, so makedrive cannot download one. If you"
+			echo "have a 10.9 installer package in Apple's flat layout (or the DMG"
+			echo "containing it), it can be supplied here and is verified against the"
+			echo "expected version and build before use."
 			echo ""
 			disp_pause_for_input
-			return 1
 		fi
 
 		if [ "$isSierra" = "1" ]; then
@@ -1166,6 +1164,7 @@ add_mas_createinstallmedia_mav () {
 				echo ""
 				echo "You can proceed by providing the Apple-provided InstallOS.pkg file."
 				echo ""
+				disp_pause_for_input
 			fi
 		fi
 
