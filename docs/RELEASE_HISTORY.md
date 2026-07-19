@@ -27,9 +27,10 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   that attaches without mounting produces a clean error instead of acting
   on an empty path.
 - **Add image menu reorganized:** Main Menu option 1 now opens a chooser
-  split between macOS installers and diagnostic images, with the full list
-  of images missing from restorekit shown there. The Main Menu shows a
-  one-line notice instead of the complete list.
+  split between macOS installers and diagnostic images. The chooser marks
+  each list that has missing images with a count, each list shows exactly
+  which of its files are missing, and the Main Menu shows a one-line
+  notice instead of the complete list.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.

@@ -1947,10 +1947,13 @@ download_installer_menu () {
 
 # ------------------------------------------------------------------------------
 # add_menu_main
-# Top level of the image installer: shows which configured images are still
-# missing from restorekit and routes to the installer or diagnostics list.
+# Top level of the image installer: tags each image category with its count
+# of missing images and routes to the installer or diagnostics list, which
+# shows its own missing files.
 # ------------------------------------------------------------------------------
 add_menu_main () {
+
+	local instTag diagTag
 
 	imageToAdd=""
 
@@ -1959,13 +1962,16 @@ add_menu_main () {
 		disp_print_header
 
 		check_file_presence
-		disp_print_missing_images
+		instTag=""
+		diagTag=""
+		[ "$missingInstallersCount" -gt 0 ] && instTag=" ($missingInstallersCount missing)"
+		[ "$missingDiagnosticsCount" -gt 0 ] && diagTag=" ($missingDiagnosticsCount missing)"
 
 		echo "Choose the type of image you'd like to add to the restorekit folder:"
 		echo ""
-		echo " 1. macOS installers"
+		echo " 1. macOS installers$instTag"
 		echo ""
-		echo " 2. Diagnostics (ASD, AXD, and the Blank Board Serializer)"
+		echo " 2. Diagnostics (ASD, AXD, and the Blank Board Serializer)$diagTag"
 		echo ""
 		echo " X. Exit Image Installer"
 		echo ""
@@ -1982,12 +1988,14 @@ add_menu_main () {
 		1 )
 			add_menu_image_list "installer" addMenuInstallers[@] \
 				"App Store installers must be in /Applications before they can be added." \
+				missingInstallersList \
 				|| break
 			;;
 
 		2 )
 			add_menu_image_list "diagnostic image" addMenuDiagnostics[@] \
 				"Diagnostic images are supplied from your own archive as single DMG files." \
+				missingDiagnosticsList \
 				|| break
 			;;
 
@@ -2009,12 +2017,14 @@ add_menu_main () {
 # $1 - Category word used in the menu prompt (e.g. "installer")
 # $2 - Name of array variable holding the image keys to list
 # $3 - One-line note printed below the menu
+# $4 - Name of the missing-list global to display above the menu
 # ------------------------------------------------------------------------------
 add_menu_image_list () {
 
 	local categoryWord="$1"
 	local menuKeys=("${!2}")
 	local categoryNote="$3"
+	local missingListVar="${4:-}"
 	local addMenuIdx addMenuLabelVar addMenuKey addFuncVar instPath imageChoice
 	local appPathVar newImageVolSizeVar finalNameVar dispNameVar volNameVar buildNumVar sourcePathVar
 	local addMenuLabels=()
@@ -2035,6 +2045,12 @@ add_menu_image_list () {
 	while true; do
 
 		disp_print_header
+
+		# Recompute each redraw so the list shrinks as images are added.
+		if [ -n "$missingListVar" ]; then
+			check_file_presence
+			disp_print_missing_images "${!missingListVar}"
+		fi
 
 		echo "Choose the $categoryWord you'd like to add to the restorekit folder:"
 		echo ""
@@ -3177,25 +3193,35 @@ quick_deploy_start () {
 
 # ------------------------------------------------------------------------------
 # check_file_presence
-# Builds the list of configured images missing from restorekit into the
-# missingImagesList global. The Main Menu prints a one-line notice when the
-# list is non-empty; the add image menu prints the full list through
-# disp_print_missing_images.
+# Builds per-category lists of configured images missing from restorekit into
+# the missingInstallersList and missingDiagnosticsList globals, with matching
+# counts. The Main Menu prints a one-line notice when anything is missing, the
+# image type chooser tags each category with its count, and each image list
+# prints its own full list through disp_print_missing_images.
 # ------------------------------------------------------------------------------
 check_file_presence () {
 
-	local imagePresenceCounter
+	local _presenceKey _presencePath
 
-	missingImagesList=""
+	missingInstallersList=""
+	missingDiagnosticsList=""
+	missingInstallersCount=0
+	missingDiagnosticsCount=0
 
-	# Run the loop through the imageFilePaths array until there are no more
-	# images to scan in the list (array).
-	for (( imagePresenceCounter = 0 ; imagePresenceCounter < ${#imageFilePaths[@]} ; imagePresenceCounter++ )); do
-
-		if [ ! -e "${imageFilePaths[$imagePresenceCounter]}" ]; then
-			missingImagesList+="${imageFilePaths[$imagePresenceCounter]##*/} \n"
+	for _presenceKey in "${addMenuInstallers[@]}"; do
+		_presencePath="${!_presenceKey}"
+		if [ ! -e "$_presencePath" ]; then
+			missingInstallersList+="${_presencePath##*/} \n"
+			missingInstallersCount=$(( missingInstallersCount + 1 ))
 		fi
+	done
 
+	for _presenceKey in "${addMenuDiagnostics[@]}"; do
+		_presencePath="${!_presenceKey}"
+		if [ ! -e "$_presencePath" ]; then
+			missingDiagnosticsList+="${_presencePath##*/} \n"
+			missingDiagnosticsCount=$(( missingDiagnosticsCount + 1 ))
+		fi
 	done
 
 	return 0
@@ -3204,16 +3230,18 @@ check_file_presence () {
 
 # ------------------------------------------------------------------------------
 # disp_print_missing_images
-# Prints the full list of images missing from restorekit, as most recently
-# computed by check_file_presence. Prints nothing when the list is empty.
+# Prints one category's list of images missing from restorekit, as most
+# recently computed by check_file_presence. Prints nothing when it is empty.
+#
+# $1 - The missing-image list to print
 # ------------------------------------------------------------------------------
 disp_print_missing_images () {
 
-	[ -z "$missingImagesList" ] && return 0
+	[ -z "$1" ] && return 0
 
 	echo "The following images are not present in restorekit:"
 	echo ""
-	echo -e "$missingImagesList" | rs -zet -g8
+	echo -e "$1" | rs -zet -g8
 	echo ""
 
 	return 0
@@ -3421,11 +3449,11 @@ main_menu () {
 		
 		check_file_presence
 
-		if [ -n "$missingImagesList" ]; then
+		if [ "$(( missingInstallersCount + missingDiagnosticsCount ))" -gt 0 ]; then
 			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 			echo ""
 			echo "One or more images your configuration expects are missing from restorekit."
-			echo "Choose option 1 to see the list and add images."
+			echo "Choose option 1 to see what's missing and add images."
 			echo ""
 			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 			echo ""
@@ -4568,9 +4596,9 @@ for _key in "${addMenuOrder[@]}"; do
 done
 unset _key
 
-# imageFilePaths lists installers before diagnostics so presence and
-# compress/scan reporting leads with the images edited most often,
-# regardless of where each family sits in makedrive.conf.
+# imageFilePaths lists installers before diagnostics so compression and
+# scan processing leads with the images edited most often, regardless of
+# where each family sits in makedrive.conf.
 imageFilePaths=()
 for _key in "${addMenuInstallers[@]}" "${addMenuDiagnostics[@]}"; do imageFilePaths+=( "${!_key}" ); done
 unset _key

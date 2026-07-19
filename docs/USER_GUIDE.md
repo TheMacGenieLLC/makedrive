@@ -105,7 +105,8 @@ session, no matter how many drives you image.
 
 If a DMG that one of your configurations expects is missing from
 restorekit, a short notice appears above the Main Menu. The add image menu
-(Main Menu option 1) lists exactly which files are missing; add them and
+(Main Menu option 1) marks each image list that has missing files, and
+choosing a list shows exactly which of its files are missing; add them and
 the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
@@ -130,12 +131,13 @@ X. Exit makedrive
 ```
 
 - **1. Add image from local file.** Opens a chooser split between macOS
-  installers and diagnostic images, and shows exactly which configured
-  images are still missing from restorekit. Each image is verified (by
-  volume name and, for installers, macOS build number) and copied into the
-  correct place in restorekit, then compressed and scanned for restore.
-  Use this for 10.9 Mavericks (which has no Apple-hosted download source)
-  or for any image you already have.
+  installers and diagnostic images, marking each list that still has
+  missing images; each list then shows exactly which of its files are
+  missing. Each image is verified (by volume name and, for installers,
+  macOS build number) and copied into the correct place in restorekit,
+  then compressed and scanned for restore. Use this for 10.9 Mavericks
+  (which has no Apple-hosted download source) or for any image you already
+  have.
 - **2. Download installer from Apple.** Fetches the Apple software-update
   catalog, lists all available macOS installers (10.7 through current,
   except 10.9), and downloads the one you choose directly from Apple. The
@@ -221,20 +223,21 @@ the change above the Main Menu.
 
 makedrive adds images into restorekit from within the script, which is
 strongly preferred over arranging the folder by hand. From the Main Menu
-choose option 1. The screen that opens lists any images your configuration
-still expects, then asks which kind of image you're adding:
+choose option 1. The screen that opens asks which kind of image you're
+adding, marking any list that still has missing images:
 
 ```
 Choose the type of image you'd like to add to the restorekit folder:
 
- 1. macOS installers
+ 1. macOS installers (2 missing)
 
  2. Diagnostics (ASD, AXD, and the Blank Board Serializer)
 
  X. Exit Image Installer
 ```
 
-Choosing macOS installers lists every installer makedrive knows how to add:
+Choosing macOS installers shows exactly which of its files are missing,
+then lists every installer makedrive knows how to add:
 
 ```
 Choose the installer you'd like to add to the restorekit folder:
