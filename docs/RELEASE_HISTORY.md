@@ -16,11 +16,23 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   certificate), and the serializer volume is cloned in place. Diagnostic
   images are excluded from the USB and SD card restore path, which stays
   installer only.
+- **Version sync preserves conf ownership:** the automatic version updater
+  stages its rewrite through a temporary file, which left makedrive.conf
+  owned by root and unreadable to the user account after an update, and
+  the next launch failed with misleading missing-variable errors. The
+  staged copy now carries the conf's own ownership and permissions, and a
+  launch that finds a conf it can't read goes straight to the
+  administrator prompt, where the conf is read and repaired with no
+  manual step.
 - **Mavericks package assembly:** a 10.9 installer flat package in Apple's
   layout is now accepted through the same package assembly, version check,
   and build verification as 10.10 through 10.12 when the installer app is
   not in /Applications. Apple never published such a package, so the
   download menu still excludes 10.9; this covers archival copies.
+- **macOS 27 Golden Gate support added:** now downloadable and addable
+  from Apple's catalog like any other current release, and included in
+  the Apple Silicon & Intel Installers build type. Configured Apple
+  Silicon only, matching Apple's Rosetta 2 phase-out schedule.
 - **Mounted-source deploys hardened:** the AXD package install and the
   serializer clone confirm the source image actually mounted before using
   it, and force-detach the source when finished or on failure, so an image
@@ -34,6 +46,40 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.
+- **Installer apps are no longer removed silently:** once an add has
+  finished, makedrive shows where the installer app it downloaded (option
+  2) or assembled from a package you supplied (option 1) is in
+  /Applications and asks whether to delete it. The prompt says what
+  keeping the app is good for, and anything typed during the download and
+  build is discarded first so it can't answer the question unseen.
+- **Download menu stays in step with Apple:** the download menu brings
+  makedrive.conf up to the live catalog before it lists installers,
+  including a re-issued build of an unchanged version, so each download is
+  labeled with and verified against the build Apple is actually serving.
+  If the conf can't be updated, makedrive says so before downloading
+  rather than after.
+- **Missing images stop a build before the disk is erased:** a full drive
+  build now confirms every image its build type needs is in restorekit
+  before a target disk is chosen. Previously the disk was partitioned
+  first and the build failed at the first missing image.
+- **Compress and scan failures are reported:** adding an image no longer
+  announces success when compression or the restore scan failed. It names
+  the step that didn't finish and points to Main Menu option 3. A staging
+  file left by an interrupted compression also no longer blocks every
+  later attempt on that image.
+- **Version sync follow-through:** a sync that can't replace the conf no
+  longer reports an update or leaves a staging file behind, and Compress
+  and scan picks up renamed images in the same session instead of after a
+  relaunch.
+- **Menu input hardening:** entries with a leading zero (08, 010) are read
+  as plain decimal numbers instead of exiting makedrive or selecting the
+  wrong item, the build type menu's R option no longer continues into disk
+  selection with no type chosen, and a menu whose input has ended exits
+  instead of redrawing indefinitely.
+- **Closing the Terminal window cleans up:** a closed window used to end
+  makedrive on the spot, leaving its lock file and scratch space (which
+  can hold a multi-gigabyte installer image) behind. It now runs the same
+  cleanup as Control-C.
 - **Configuration checked at launch:** makedrive.conf is now validated
   before any menu is offered. A missing variable, an unrecognized deploy
   type or AddFunc, or whitespace in a partition field is reported as an

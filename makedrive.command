@@ -235,6 +235,72 @@ dmg_apply_volume_icon () {
 
 
 # ------------------------------------------------------------------------------
+# add_offer_app_removal
+# Shows where an installer app makedrive placed in /Applications is and asks
+# whether to delete it. The app runs several gigabytes and the finished image
+# never reads it again, but it is also the quickest way to retry an add that
+# failed, so removal is offered rather than assumed, and each outcome says
+# what keeping the app is good for. Anything typed during the long build is
+# discarded first so it can't answer the question unseen. Does nothing if the
+# app is not there.
+#
+# $1 - Path to the installer app
+# $2 - Result of the add that used it (0 = the image was added)
+# $3 - Where the app came from: "download" (Main Menu option 2) or "package"
+#      (assembled from a package supplied through option 1)
+# ------------------------------------------------------------------------------
+add_offer_app_removal () {
+
+	local appPath="$1" addResult="$2" appSource="$3"
+	local appOrigin="downloaded for this image" deleteApp
+
+	[ -n "$appPath" ] && [ -d "$appPath" ] || return 0
+
+	[ "$appSource" = "package" ] && appOrigin="assembled from your package"
+
+	disp_print_header
+
+	if [ "$addResult" = "0" ]; then
+		echo "The installer app $appOrigin is still in /Applications:"
+		echo "  $appPath"
+		echo ""
+		echo "The image in restorekit doesn't need it. Keep it only if you want the"
+		echo "installer app itself."
+	else
+		echo "The add did not finish, but the installer app $appOrigin"
+		echo "is still in /Applications:"
+		echo "  $appPath"
+		echo ""
+		if [ "$appSource" = "package" ]; then
+			echo "Keep it to try again without supplying the package a second time. Delete"
+			echo "it if the package was the wrong one, so makedrive asks for it again."
+		else
+			echo "Keeping it lets you try again through Main Menu option 1 without"
+			echo "downloading it a second time."
+		fi
+	fi
+
+	echo ""
+	disp_discard_typeahead
+	printf "Delete it to free up disk space? Y/N: "
+	read -r deleteApp
+
+	if [ "$deleteApp" = "Y" ] || [ "$deleteApp" = "y" ]; then
+		if ! rm -rf "$appPath"; then
+			echo ""
+			echo "The installer app could not be removed. Delete it from /Applications"
+			echo "yourself to reclaim the space."
+			echo ""
+			disp_pause_for_input
+		fi
+	fi
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
 # add_copy_single_dmg
 # Processes a given single disk image and copies it into its proper location
 # inside of the restorekit folder.
@@ -246,10 +312,13 @@ dmg_apply_volume_icon () {
 #      (Only needed when copying an OS installer)
 # $5 - Path to source DMG, if already known (leave empty to prompt the user)
 # $6 - Path to installer application bundle for volume icon (leave empty to skip)
+#
+# Returns 0 once the image is in restorekit, compressed, and scanned; 1 otherwise.
 # ------------------------------------------------------------------------------
 add_copy_single_dmg () {
 
 	local testDevice testMountPoint mpBase grepReturn dmgBaseDir _pkgExtractedApp=""
+	local copyResult=1
 
 	disp_print_header
 
@@ -304,7 +373,7 @@ add_copy_single_dmg () {
 		echo ""
 		disp_pause_for_input
 		imagePathToAdd=""
-		[ -n "$_pkgExtractedApp" ] && rm -rf "$_pkgExtractedApp"
+		add_offer_app_removal "$_pkgExtractedApp" 1 package
 		return 1
 	fi
 
@@ -442,13 +511,12 @@ with open(sys.argv[1], 'r+b') as f:
 			fi
 			rm -f "$iconShadow" "$iconMergedDmg"
 
-			dmgtool_compress_dmg "$2"
-			dmgtool_scan_dmg "$2"
+			if dmgtool_prepare_dmg "$2" "$1"; then
+				disp_print_header
+				echo "$1 was successfully copied into restorekit."
+				copyResult=0
+			fi
 
-			disp_print_header
-
-			echo "$1 was successfully copied into restorekit."
-		
 		else
 			
 			echo ""
@@ -475,7 +543,9 @@ with open(sys.argv[1], 'r+b') as f:
 	disp_pause_for_input
 
 	imagePathToAdd=""
-	[ -n "$_pkgExtractedApp" ] && rm -rf "$_pkgExtractedApp"
+	add_offer_app_removal "$_pkgExtractedApp" "$copyResult" package
+
+	return "$copyResult"
 
 }
 
@@ -867,8 +937,11 @@ add_mas_createinstallmedia_impl () {
 	# Detach the Shared Support volume left mounted by createinstallmedia (Mojave+ only).
 	[ "$7" != "mav" ] && hdiutil detach -force "/Volumes/Shared Support"
 
-	dmgtool_compress_dmg "$5"
-	dmgtool_scan_dmg "$5"
+	if ! dmgtool_prepare_dmg "$5" "$6"; then
+		echo ""
+		disp_pause_for_input
+		return 1
+	fi
 
 	echo ""
 	echo "$6 is ready for use."
@@ -939,7 +1012,8 @@ host_macos_version () {
 # The InstallESD.dmg is moved (not copied) into the assembled app - a move on
 # the same volume is instant and uses no additional disk space.
 #
-# The caller is responsible for removing $1 after it is no longer needed.
+# The caller offers removal of $1 (add_offer_app_removal) once it is no
+# longer needed.
 #
 # $1 - Expected path of the assembled installer app (e.g.
 #      /Applications/Install macOS Sierra.app)
@@ -1134,10 +1208,10 @@ add_mas_createinstallmedia_mav () {
 	# not already in /Applications, offer pkg extraction via
 	# add_installer_from_pkg. Apple never published a package for Mavericks
 	# (10.9), so its note sets expectations: a package in Apple's flat layout
-	# works, but the user supplies it from their own archive. Sierra on Golden
-	# Gate has the additional constraint that its JavaScript distribution
-	# scripts are rejected by the host's pkg engine - surfaced so the user
-	# understands why the MAS cannot be used. Both notes pause for input,
+	# works, but the user supplies it from their own archive. Sierra on a
+	# macOS 26 or later host has the additional constraint that its JavaScript
+	# distribution scripts are rejected by the host's pkg engine - surfaced so
+	# the user understands why the MAS cannot be used. Both notes pause for input,
 	# since the pkg prompt clears the screen when it draws its own header.
 	local _pkgExtracted=0
 	if [ ! -d "$1" ]; then
@@ -1159,7 +1233,7 @@ add_mas_createinstallmedia_mav () {
 			if [ -n "$hostVer" ] && ! conf_version_newer "26" "$hostVer"; then
 				disp_print_header
 				echo "macOS Sierra (10.12) cannot be downloaded or installed from the Mac App"
-				echo "Store on Golden Gate (macOS 26+). Its installer package uses JavaScript"
+				echo "Store on macOS 26 and later. Its installer package uses JavaScript"
 				echo "distribution scripts that are incompatible with this host's pkg engine."
 				echo ""
 				echo "You can proceed by providing the Apple-provided InstallOS.pkg file."
@@ -1176,7 +1250,7 @@ add_mas_createinstallmedia_mav () {
 	add_mas_createinstallmedia_impl "$1" "$2" "$3" "$4" "$5" "$6" "mav"
 	local _result=$?
 
-	[ "$_pkgExtracted" = "1" ] && rm -rf "$1"
+	[ "$_pkgExtracted" = "1" ] && add_offer_app_removal "$1" "$_result" package
 
 	return $_result
 
@@ -1252,7 +1326,8 @@ download_curl_interruptible () {
 #                   add_installer_from_pkg to assemble the installer app
 #   catalog_single - single InstallAssistant.pkg (11+); installer to /
 #   catalog_hfs    - packages (10.13-10.15); pkgutil expand → app + InstallESD.dmg
-# After the pipeline completes the assembled/installed app is removed.
+# After the pipeline finishes, removing the assembled/installed app is offered
+# rather than assumed. Returns 0 if the image was added, 1 otherwise.
 #
 # $1 - conf key (e.g. "inst1015i")
 # $2 - source type: "cdn_dmg" | "catalog_single" | "catalog_hfs"
@@ -1534,18 +1609,22 @@ download_fetch_and_process () {
 	rm -rf "$tmpDir"
 
 	# Dispatch to the standard add-installer pipeline - same calls as add_menu_image_list
+	local addResult=1
 	case "$addFunc" in
 
 	COPY_SINGLE )
 		add_copy_single_dmg "$dispName" "$instPath" "$volName" "$buildNum" "$srcPath" "$appPath"
+		addResult=$?
 		;;
 
 	CREATE_INSTALL_MEDIA_MAV )
 		add_mas_createinstallmedia_mav "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
+		addResult=$?
 		;;
 
 	CREATE_INSTALL_MEDIA )
 		add_mas_createinstallmedia "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
+		addResult=$?
 		;;
 
 	* )
@@ -1559,10 +1638,11 @@ download_fetch_and_process () {
 
 	esac
 
-	# Clean up any app that was installed or assembled to /Applications
-	[ -n "$_assembledApp" ] && [ -d "$_assembledApp" ] && rm -rf "$_assembledApp"
+	# The app installed or assembled to /Applications is the only copy of
+	# the download, so its removal is offered rather than assumed.
+	add_offer_app_removal "$_assembledApp" "$addResult" download
 
-	return 0
+	return "$addResult"
 
 }
 
@@ -1575,7 +1655,8 @@ download_fetch_and_process () {
 # same catalog walk but different outputs:
 #
 #   sync - MACOS_DL_* version/build pairs only (lightweight startup check)
-#   menu - MAKEDRIVE_DLCAT_* rows with download URLs and sizes
+#   menu - the same pairs, plus MAKEDRIVE_DLCAT_* rows with download URLs
+#          and sizes
 #
 # Callers redirect stdout to a temp file, verify the COUNT marker is present
 # (network failure produces no output), and source it.
@@ -1599,7 +1680,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # MAKEDRIVE_CATALOG_MODE selects the output, both shell-sourceable variable
 # assignments printed to stdout:
 #   sync - MACOS_DL_* version/build pairs per macOS generation
-#   menu - MAKEDRIVE_DLCAT_* download rows (key, build, source type, URLs, size)
+#   menu - the same pairs, plus MAKEDRIVE_DLCAT_* download rows (key, build,
+#          source type, URLs, size)
 MODE = os.environ.get("MAKEDRIVE_CATALOG_MODE", "sync")
 
 # Fetch a URL with curl (follows redirects, fails on HTTP errors). Returns the
@@ -1720,13 +1802,17 @@ SAFE_URL     = re.compile(r'^https://[A-Za-z0-9._~:/%+=-]+$')
 
 final = sorted(newest.values(), key=lambda e: parse_ver(e["version"]), reverse=True)
 
+# The version/build pairs are emitted in both modes. The launch sync reads
+# them alone; the download menu uses them to bring the conf up to the catalog
+# before it lists the builds it is about to download.
+pairs = [e for e in final
+         if SAFE_VERSION.match(e["version"]) and SAFE_BUILD.match(e["build"])]
+print("MACOS_DL_COUNT=" + str(len(pairs)))
+for i, e in enumerate(pairs):
+    print('MACOS_DL_VERSION_' + str(i) + '="' + e["version"] + '"')
+    print('MACOS_DL_BUILD_'   + str(i) + '="' + e["build"] + '"')
+
 if MODE == "sync":
-    final = [e for e in final
-             if SAFE_VERSION.match(e["version"]) and SAFE_BUILD.match(e["build"])]
-    print("MACOS_DL_COUNT=" + str(len(final)))
-    for i, e in enumerate(final):
-        print('MACOS_DL_VERSION_' + str(i) + '="' + e["version"] + '"')
-        print('MACOS_DL_BUILD_'   + str(i) + '="' + e["build"] + '"')
     sys.exit(0)
 
 # menu mode from here down: build MAKEDRIVE_DLCAT_* download rows.
@@ -1759,7 +1845,7 @@ def conf_key_for(version):
     key_root = (1000 + p[1]) if major == 10 else (major * 100)
     prefix = f"inst{key_root}"
     for k in MENU_ORDER:
-        if k.startswith(prefix) and not k.endswith("a"):
+        if k.startswith(prefix):
             return k
     return None
 
@@ -1855,24 +1941,33 @@ download_installer_menu () {
 	source "$syncFile"
 	rm -f "$syncFile"
 
+	# Bring makedrive.conf up to this catalog before listing anything. The
+	# launch sync may have been skipped (offline) or served from its two-hour
+	# cache, and the rows below download whatever build Apple lists right
+	# now, so a conf left behind would label them with an old version and
+	# verify them against a build that is no longer the one on offer.
+	download_sync_conf "$MACOS_DL_COUNT" reissue
+
 	local catCount="$MAKEDRIVE_DLCAT_COUNT"
 
 	# Build unified download list: catalog entries (newest first, from Python),
 	# followed by CDN entries for 10.7-10.12 (newest first; 10.9 intentionally absent).
-	local -a dlKeys dlLabels dlTypes dlURLs dlBytes
+	local -a dlKeys dlLabels dlTypes dlURLs dlBytes dlBuilds
 
-	local i _kv _tv _uv _bv _labV
+	local i _kv _tv _uv _bv _buv _labV
 	for (( i = 0; i < catCount; i++ )); do
 		_kv="MAKEDRIVE_DLCAT_${i}_KEY"
 		_tv="MAKEDRIVE_DLCAT_${i}_TYPE"
 		_uv="MAKEDRIVE_DLCAT_${i}_URL"
 		_bv="MAKEDRIVE_DLCAT_${i}_BYTES"
+		_buv="MAKEDRIVE_DLCAT_${i}_BUILD"
 		_labV="${!_kv}MenuLabel"
 		dlKeys+=("${!_kv}")
 		dlLabels+=("${!_labV}")
 		dlTypes+=("${!_tv}")
 		dlURLs+=("${!_uv}")
 		dlBytes+=("${!_bv}")
+		dlBuilds+=("${!_buv}")
 	done
 
 	# CDN entries - hardcoded Apple URLs, verified 2026-06
@@ -1895,16 +1990,17 @@ download_installer_menu () {
 		dlTypes+=("cdn_dmg")
 		dlURLs+=("${_cdnURLs[$i]}")
 		dlBytes+=("${_cdnBytes[$i]}")
+		dlBuilds+=("")
 	done
 
 	local totalCount=${#dlKeys[@]}
-	local dlChoice selIdx _gb
+	local dlChoice selIdx _gb _confBuildVar
 
 	while true; do
 
 		disp_print_header
 
-		echo "Choose a macOS installer to download from Apple:"
+		echo "Choose a macOS installer to download and add to restorekit:"
 		echo ""
 		echo "  10.9 Mavericks is not available from Apple - add it manually via option 1."
 		echo ""
@@ -1917,18 +2013,38 @@ download_installer_menu () {
 		echo ""
 		echo "  X. Return to Main Menu"
 		echo ""
-		echo "Enter a number to download, or X to return:"
+		echo "Enter a number to download and add, or X to return:"
 		echo ""
-		read -r dlChoice
+		disp_read_choice dlChoice
 
 		case "$dlChoice" in
 
 		[Xx]) return 0 ;;
 
 		*)
-			if [ "$dlChoice" -ge 1 ] 2>/dev/null && \
-			   [ "$dlChoice" -le "$totalCount" ] 2>/dev/null; then
-				selIdx=$(( dlChoice - 1 ))
+			if selIdx=$(menu_choice_index "$dlChoice" "$totalCount"); then
+
+				# A catalog installer is verified against the conf's build
+				# once it is installed. If the conf could not be brought up
+				# to the build Apple is offering (a locked file, or a version
+				# set by hand to one newer than Apple's), say so before the
+				# download instead of after it.
+				_confBuildVar="${dlKeys[$selIdx]}BuildNumber"
+				if [ "${dlTypes[$selIdx]}" = "catalog_single" ] && \
+				   [ -n "${dlBuilds[$selIdx]}" ] && [ -n "${!_confBuildVar}" ] && \
+				   [ "${dlBuilds[$selIdx]}" != "${!_confBuildVar}" ]; then
+					disp_print_header
+					echo "Apple is currently offering build ${dlBuilds[$selIdx]} of this installer, but"
+					echo "makedrive.conf expects build ${!_confBuildVar} and could not be updated to match,"
+					echo "so the download would fail verification. Nothing was downloaded."
+					echo ""
+					echo "Check that makedrive.conf can be written to, and that its version for"
+					echo "this entry is not newer than the one Apple offers, then try again."
+					echo ""
+					disp_pause_for_input
+					continue
+				fi
+
 				download_fetch_and_process \
 					"${dlKeys[$selIdx]}" \
 					"${dlTypes[$selIdx]}" \
@@ -1977,7 +2093,7 @@ add_menu_main () {
 		echo ""
 		echo "Enter the number or letter for the list you'd like to see and hit return: "
 		echo ""
-		read -r imageToAdd
+		disp_read_choice imageToAdd
 
 		case "$imageToAdd" in
 
@@ -2066,7 +2182,7 @@ add_menu_image_list () {
 		echo "Enter the number or letter for the software you'd like to add into the"
 		echo "restorekit folder and hit return: "
 		echo ""
-		read -r imageChoice
+		disp_read_choice imageChoice
 
 		case "$imageChoice" in
 
@@ -2079,10 +2195,8 @@ add_menu_image_list () {
 			;;
 
 		* )
-			if [ "$imageChoice" -ge 1 ] 2>/dev/null && \
-			   [ "$imageChoice" -le "${#menuKeys[@]}" ] 2>/dev/null; then
+			if addMenuIdx=$(menu_choice_index "$imageChoice" "${#menuKeys[@]}"); then
 
-				addMenuIdx=$(( imageChoice - 1 ))
 				addMenuKey="${menuKeys[$addMenuIdx]}"
 
 				addFuncVar="${addMenuKey}AddFunc"
@@ -2149,6 +2263,50 @@ add_menu_image_list () {
 
 
 # ------------------------------------------------------------------------------
+# menu_choice_index
+# Turns a numbered-menu answer into a zero-based array index. Prints the index
+# and returns 0 for a whole number from 1 to the item count; prints nothing
+# and returns 1 for anything else. The base is forced to 10 because bash
+# arithmetic reads a leading zero as octal, where "08" is an error that
+# unwinds the whole menu loop and "010" quietly selects item 8.
+#
+# $1 - The text the user entered
+# $2 - Number of items in the menu
+# ------------------------------------------------------------------------------
+menu_choice_index () {
+
+	[[ "$1" =~ ^[0-9]{1,4}$ ]] || return 1
+
+	local choice=$(( 10#$1 ))
+	{ [ "$choice" -ge 1 ] && [ "$choice" -le "$2" ]; } || return 1
+
+	echo $(( choice - 1 ))
+
+}
+
+
+# ------------------------------------------------------------------------------
+# conf_build_image_paths
+# Rebuilds imageFilePaths, the list the compress and scan track walks, from
+# the current path of every image key. Installers come before diagnostics so
+# processing leads with the images edited most often, regardless of where
+# each family sits in makedrive.conf. Run at launch and again whenever a
+# version sync rewrites the conf, because each path carries its version in
+# the filename and a stale list would skip the renamed image.
+# ------------------------------------------------------------------------------
+conf_build_image_paths () {
+
+	local _key
+
+	imageFilePaths=()
+	for _key in "${addMenuInstallers[@]}" "${addMenuDiagnostics[@]}"; do
+		imageFilePaths+=( "${!_key}" )
+	done
+
+}
+
+
+# ------------------------------------------------------------------------------
 # conf_version_newer
 # Returns 0 (true) if $1 is strictly newer than $2 as a dot-separated version.
 # Compares integer components left to right; missing components treated as 0.
@@ -2180,13 +2338,17 @@ conf_version_newer () {
 # the updated paths and build numbers immediately.
 #
 # $1 - Number of catalog entries (macOSdlCount)
+# $2 - "reissue" to also adopt a different build of the version the conf
+#      already names. The download menu passes it, since that build is the
+#      one it is about to fetch; the launch sync leaves a same-version build
+#      alone so a build number set by hand survives.
 # ------------------------------------------------------------------------------
 download_sync_conf () {
 
-	local dlCount="$1" quiet="${2:-0}"
+	local dlCount="$1" adoptReissue="${2:-}"
 	local confPath="$makedriveSupportConf"
-	local dlIdx dlVer dlBuild _v _b
-	local osMajor osMinor keyRoot instKey menuKey instPath confVer changed
+	local dlIdx dlVer dlBuild _v _b _t
+	local osMajor osMinor keyRoot instKey menuKey instPath confVer confBuild changed
 	local anyUpdate=0
 
 	for (( dlIdx = 0; dlIdx < dlCount; dlIdx++ )); do
@@ -2218,8 +2380,18 @@ download_sync_conf () {
 		confVer="${instPath##*/}"      # e.g. "26.5.1 Install.dmg"
 		confVer="${confVer% Install.dmg}"  # e.g. "26.5.1"
 
-		# Nothing to do if the catalog version is not strictly newer
-		conf_version_newer "$dlVer" "$confVer" || continue
+		# Nothing to do unless the catalog version is strictly newer, or (for
+		# the download menu only) it is the same version under another build.
+		# An empty conf build means verification is switched off for that
+		# entry, so it is left empty.
+		if ! conf_version_newer "$dlVer" "$confVer"; then
+			[ "$adoptReissue" = "reissue" ]       || continue
+			conf_version_newer "$confVer" "$dlVer" && continue
+			_t="${instKey}BuildNumber"; confBuild="${!_t}"
+			if [ -z "$dlBuild" ] || [ -z "$confBuild" ] || [ "$dlBuild" = "$confBuild" ]; then
+				continue
+			fi
+		fi
 
 		# Update makedrive.conf using awk literal-string substitution.
 		# lsub() does a plain index()-based replace - no regex metacharacter
@@ -2229,6 +2401,13 @@ download_sync_conf () {
 		# the conf. The change count is printed to stdout and captured.
 		local tmpConf
 		tmpConf=$(mktemp "${confPath}.XXXXXX") || continue  # can't stage safely; skip this update
+		# mktemp creates the staging file mode 600 owned by root (makedrive
+		# runs elevated here), and the rename below installs it as the conf,
+		# which the unelevated launch pass then can't read. Give the staging
+		# file the conf's own owner, group, and mode before it is filled in
+		# so the rename changes nothing but the contents.
+		chown "$(stat -f '%u:%g' "$confPath")" "$tmpConf" 2>/dev/null
+		chmod "$(stat -f '%Lp' "$confPath")" "$tmpConf" 2>/dev/null
 		# shellcheck disable=SC2016  # $ refs are awk variables, not shell
 		local awkProg='
 function lsub(str, from, to,    i) {
@@ -2260,10 +2439,11 @@ END { print n+0 }
 		    -v new_build="$dlBuild" \
 		    -v out="$tmpConf" \
 		    "$awkProg" "$confPath")
-		if [ "${changed:-0}" -gt 0 ] 2>/dev/null; then
-			mv "$tmpConf" "$confPath"
+		# The update only counts once the rename lands. A conf that can't be
+		# replaced (locked in Finder, for example) is left as it was, with
+		# no notice claiming otherwise and no staging file left behind.
+		if [ "${changed:-0}" -gt 0 ] 2>/dev/null && mv "$tmpConf" "$confPath" 2>/dev/null; then
 			makeDriveSyncNotice+="${makeDriveSyncNotice:+, }macOS ${dlVer} (${dlBuild})"
-			[ "$quiet" != "1" ] && echo "  makedrive.conf: ${instKey} updated ${confVer} → ${dlVer} (${dlBuild})"
 			anyUpdate=1
 		else
 			rm -f "$tmpConf"
@@ -2273,7 +2453,7 @@ END { print n+0 }
 	if [ "$anyUpdate" = "1" ]; then
 		# shellcheck source=/dev/null
 		source "$confPath"
-		[ "$quiet" != "1" ] && echo ""
+		conf_build_image_paths
 	fi
 
 }
@@ -2283,8 +2463,8 @@ END { print n+0 }
 # startup_sync_versions
 # Runs at launch before the main menu. Fetches a lightweight catalog from
 # Apple's servers (version and build only - no package URLs), compares each
-# major-version slot against makedrive.conf, and calls download_sync_conf in
-# quiet mode to update the conf in-place when newer minor releases exist.
+# major-version slot against makedrive.conf, and calls download_sync_conf to
+# update the conf in-place when newer minor releases exist.
 # Sets makeDriveSyncNotice (read by main_menu) if any updates were applied.
 # Network failure is non-fatal: the function returns 0 and leaves conf alone.
 # ------------------------------------------------------------------------------
@@ -2337,7 +2517,7 @@ startup_sync_versions () {
 	macOSdlCount=$MACOS_DL_COUNT
 
 	makeDriveSyncNotice=""
-	download_sync_conf "$macOSdlCount" 1
+	download_sync_conf "$macOSdlCount"
 
 	for (( dlIdx = 0; dlIdx < macOSdlCount; dlIdx++ )); do
 		unset "MACOS_DL_VERSION_${dlIdx}" "MACOS_DL_BUILD_${dlIdx}"
@@ -2385,7 +2565,7 @@ build_ask_to_copy_datadrive () {
 			echo "Do you want to copy the contents of the data partition to disk$diskNum?"
 			echo ""
 			echo "Enter Y or N: "
-			read -r okToCopyData
+			disp_read_choice okToCopyData
 		fi
 			
 		# If the input is none of the valid inputs, null the value and return to
@@ -2456,7 +2636,7 @@ build_choose_target_device () {
 		echo ""
 		echo "To cancel the selection process, enter \"X\" and hit return."
 		echo ""
-		read -r diskNum
+		disp_read_choice diskNum
 
 		# If the input is null, reload the script
 		if [ "$diskNum" == "" ]; then
@@ -2821,12 +3001,20 @@ build_drives_start () {
 	# image another drive.  Once the answer is no, exit.
 	while [ "$doDrive" == "Y" ] || [ "$doDrive" == "y" ]; do
 		build_menu_chooser
-		
+
 		if [ "$diskType" == "X" ] || [ "$diskType" == "x" ]; then
-			
+
 			break
 		fi
-		
+
+		# R leaves the chooser with no type selected, and a type with images
+		# missing can't be built. Both go back to the chooser here, before
+		# any disk has been chosen.
+		if [ -z "$diskType" ] || ! build_check_images_present; then
+			diskType=""
+			continue
+		fi
+
 		build_ask_to_copy_datadrive
 		build_choose_target_device
 		
@@ -2865,6 +3053,43 @@ build_drives_start () {
 	done
 
 	return 0
+}
+
+
+# ------------------------------------------------------------------------------
+# build_check_images_present
+# Confirms every image the chosen build type deploys is in restorekit before
+# a target disk is picked. The build partitions the disk first and restores
+# volumes in order, so a missing image would otherwise surface as a failed
+# restore on a drive that has already been erased.
+#
+# Uses global: diskType
+# Returns 0 if every image is present, 1 after listing the ones that are not.
+# ------------------------------------------------------------------------------
+build_check_images_present () {
+
+	local volumesRef="buildType${diskType}_volumes[@]"
+	local key imagePath missingList=""
+
+	for key in "${!volumesRef}"; do
+		[ "$key" = "dataDrive" ] && continue
+		imagePath="${!key}"
+		[ -f "$imagePath" ] || missingList+="${imagePath##*/} \n"
+	done
+
+	[ -z "$missingList" ] && return 0
+
+	disp_print_header
+	echo "This drive type can't be built yet, and no disk has been touched."
+	echo ""
+	disp_print_missing_images "$missingList"
+	echo "Add them through Main Menu option 1 or 2, or take them out of this drive"
+	echo "type's volume list in makedrive.conf, then try again."
+	echo ""
+	disp_pause_for_input
+
+	return 1
+
 }
 
 
@@ -2938,7 +3163,7 @@ build_menu_chooser () {
 		echo ""
 		echo "  X. Return to the main menu"
 		echo ""
-		read -r diskType
+		disp_read_choice diskType
 
 		case "$diskType" in
 		[Xx] )
@@ -3004,7 +3229,7 @@ build_run_build_task () {
 # ------------------------------------------------------------------------------
 quick_deploy_menu_choose_image () {
 
-	local selectedImageNum selectedImageKey key dispNameVar menuIndex=1
+	local selectedImageNum selectedIdx selectedImageKey key dispNameVar menuIndex=1
 	local deployableImages=()
 	local menuLabels=()
 
@@ -3041,7 +3266,7 @@ quick_deploy_menu_choose_image () {
 		echo ""
 		echo "Enter the number for the image you'd like to restore and hit return: "
 		echo ""
-		read -r selectedImageNum
+		disp_read_choice selectedImageNum
 
 		case "$selectedImageNum" in
 
@@ -3050,8 +3275,8 @@ quick_deploy_menu_choose_image () {
 			;;
 
 		* )
-			if [ "$selectedImageNum" -ge 1 ] 2>/dev/null && [ "$selectedImageNum" -le "${#deployableImages[@]}" ] 2>/dev/null; then
-				selectedImageKey="${deployableImages[$((selectedImageNum - 1))]}"
+			if selectedIdx=$(menu_choice_index "$selectedImageNum" "${#deployableImages[@]}"); then
+				selectedImageKey="${deployableImages[$selectedIdx]}"
 			fi
 			;;
 
@@ -3298,8 +3523,14 @@ dmgtool_compress_dmg () {
 			echo ""
 		fi
 
+		# A staging file left behind by an interrupted run makes hdiutil
+		# refuse with "File exists" on every later attempt, so clear it
+		# before converting and again if the conversion fails.
+		rm -f "$1.new.dmg"
+
 		if ! hdiutil convert "$1" -format "$dmgCompressionType" -o "$1.new.dmg"; then
-		
+
+			rm -f "$1.new.dmg"
 			return 1
 
 		else
@@ -3364,10 +3595,41 @@ dmgtool_scan_dmg () {
 		fi
 		
 	else
-			
+
 		return 0
-					
+
 	fi
+
+}
+
+
+# ------------------------------------------------------------------------------
+# dmgtool_prepare_dmg
+# Compresses and then scans an image that was just added to restorekit. Both
+# steps always run: an image that could not be compressed can still be
+# scanned and restored. On failure it says which step did not finish and how
+# to retry, and leaves the pause to the caller.
+#
+# $1 - Path to the DMG in restorekit
+# $2 - Display name of the image
+#
+# Returns 0 if the image is compressed and scanned, 1 otherwise.
+# ------------------------------------------------------------------------------
+dmgtool_prepare_dmg () {
+
+	local prepFailed=""
+
+	dmgtool_compress_dmg "$1" || prepFailed="compressed"
+	dmgtool_scan_dmg "$1"     || prepFailed="${prepFailed:+$prepFailed or }scanned for restore"
+
+	[ -z "$prepFailed" ] && return 0
+
+	disp_print_header
+	echo "$2 is in restorekit, but it"
+	echo "could not be $prepFailed. Check available disk space, then"
+	echo "run Main Menu option 3 to finish preparing it."
+
+	return 1
 
 }
 
@@ -3399,6 +3661,52 @@ disp_pause_for_input () {
 	local message="${1:-Hit enter to continue.}"
 	echo "$message"
 	read -r _
+
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_read_choice
+# read -r for the prompt of a menu that asks again on empty input. Once input
+# has ended every read fails at once, and such a menu would redraw forever at
+# full CPU. A closed Terminal window normally ends the script through the
+# SIGHUP trap first; this covers the cases where no hangup arrives (input
+# from a pipe or file, or SIGHUP ignored by whatever launched makedrive).
+# One failed read is just Control-D at a live terminal, so it is retried; a
+# second failure in a row means no input can arrive, and makedrive exits
+# through its normal cleanup.
+#
+# $1 - Name of the variable to read into
+# ------------------------------------------------------------------------------
+disp_read_choice () {
+
+	read -r "$1" && return 0
+	read -r "$1" && return 0
+
+	postflight_cleanup
+
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_discard_typeahead
+# Throws away anything typed before a prompt was on screen. Used ahead of a
+# question that follows a long unattended step, where Returns pressed while
+# waiting would otherwise be read as the answer. Lifting canonical mode makes
+# the queued input readable at once and makes read report end of input, rather
+# than wait, as soon as the queue is empty.
+# ------------------------------------------------------------------------------
+disp_discard_typeahead () {
+
+	local sttySaved discard
+
+	[ -t 0 ] || return 0
+	sttySaved=$(stty -g 2>/dev/null) || return 0
+
+	stty -icanon min 0 time 0 2>/dev/null
+	# shellcheck disable=SC2034  # read needs a target; the input is discarded
+	while IFS= read -r discard; do :; done
+	stty "$sttySaved" 2>/dev/null
 
 }
 
@@ -3469,7 +3777,7 @@ main_menu () {
 		echo ""
 		echo -e "\033[1m1. Add image from local file\033[0m"
 		echo ""
-		echo -e "\033[1m2. Download installer from Apple\033[0m"
+		echo -e "\033[1m2. Download and add installer from Apple\033[0m"
 		echo ""
 		echo -e "\033[1m3. Compress and scan DMGs for restore\033[0m"
 		echo ""
@@ -3485,7 +3793,7 @@ main_menu () {
 		echo ""
 		echo "Enter the number or letter for the function you'd like to run and hit return."
 		echo ""
-		read -r trackToTake
+		disp_read_choice trackToTake
 
 		case "$trackToTake" in
 
@@ -3732,7 +4040,7 @@ notify_pushover_setup () {
 		echo ""
 		echo "Enter a number or letter and hit return: "
 		echo ""
-		read -r pushoverMenuChoice
+		disp_read_choice pushoverMenuChoice
 
 		case "$pushoverMenuChoice" in
 
@@ -4537,9 +4845,12 @@ process_check_dmgs () {
 	return 0
 }
 
-# If the script has to be killed, clean up the temp/lock files
+# If the script has to be killed, clean up the temp/lock files. SIGHUP is what
+# arrives when the Terminal window is closed; untrapped it ends the script on
+# the spot and leaves the lockfile and scratch directory (which can hold a
+# multi-gigabyte installer image) behind.
 
-trap postflight_cleanup SIGINT SIGTERM
+trap postflight_cleanup SIGINT SIGTERM SIGHUP
 
 # Get execution path first - makedrive.conf uses $executionPath to resolve
 # paths to restorekit image files.
@@ -4561,6 +4872,14 @@ else
 	echo "makedrive configuration file not found."
 	echo "Place makedrive.conf alongside makedrive.command and re-run to install it."
 	exit 1
+fi
+# A conf this account can't read (left root-owned by a Build 202 version
+# sync, or the root-only legacy file) would source as nothing here, empty
+# the grep-based derivations below, and fail the conf lint with misleading
+# "not set" errors before elevation is ever reached. The elevated pass reads
+# it without trouble and re-owns the support directory, so go straight there.
+if [ ! -r "$_makedrive_active_conf" ]; then
+	preflight_check_root
 fi
 # shellcheck source=/dev/null
 . "$_makedrive_active_conf"
@@ -4596,12 +4915,7 @@ for _key in "${addMenuOrder[@]}"; do
 done
 unset _key
 
-# imageFilePaths lists installers before diagnostics so compression and
-# scan processing leads with the images edited most often, regardless of
-# where each family sits in makedrive.conf.
-imageFilePaths=()
-for _key in "${addMenuInstallers[@]}" "${addMenuDiagnostics[@]}"; do imageFilePaths+=( "${!_key}" ); done
-unset _key
+conf_build_image_paths
 
 # buildTypeNums (the registry of valid type numbers, in menu display order)
 # is derived from every buildTypeXX_label key in makedrive.conf, sorted
@@ -4685,14 +4999,15 @@ elif [ -f "$_makedrive_legacy_conf" ] && [ ! -f "$makedriveSupportConf" ]; then
 fi
 unset _makedrive_legacy_conf _makedrive_active_conf
 
-# Ensure the support directory and its contents are owned by the invoking user
-# so makedrive.conf can be edited without elevated privileges. makedrive runs as
-# root, so files it creates here are root-owned by default.
-[ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$makedriveSupportDir"
-
 migrate_pushover_credentials
 
 startup_sync_versions
+
+# Ensure the support directory and its contents are owned by the invoking user
+# so makedrive.conf can be edited without elevated privileges. makedrive runs as
+# root, so files it creates here are root-owned by default. This runs after the
+# version sync so the catalog cache it writes is covered on the same launch.
+[ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$makedriveSupportDir"
 
 # Root-owned scratch space (mode 700, unpredictable name) for the installer
 # sparseimage, icon work, and package expansion.

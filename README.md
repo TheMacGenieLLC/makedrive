@@ -56,8 +56,8 @@ you can boot or re-install almost any Mac from one drive.
 ```
 Welcome to makedrive's Main Menu.
 
-1. Add installer from local file
-2. Download installer from Apple
+1. Add image from local file
+2. Download and add installer from Apple
 3. Compress and scan DMGs for restore
 4. Build your install drive
 5. Restore image to USB or SD card

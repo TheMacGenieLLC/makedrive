@@ -17,7 +17,7 @@
 - [makedrive.conf](#makedriveconf)
 - [Adding Images to restorekit](#adding-images-to-restorekit)
 - [Mac App Store Installers](#mac-app-store-installers)
-- [Downloading Installers from Apple](#downloading-installers-from-apple)
+- [Downloading and Adding Installers from Apple](#downloading-and-adding-installers-from-apple)
 - [Volume Icons](#volume-icons)
 - [Building Install Drives](#building-install-drives)
 - [Diagnostic Drives](#diagnostic-drives)
@@ -121,7 +121,7 @@ script.
 Welcome to makedrive's Main Menu.
 
 1. Add image from local file
-2. Download installer from Apple
+2. Download and add installer from Apple
 3. Compress and scan DMGs for restore
 4. Build your install drive
 5. Restore image to USB or SD card
@@ -138,12 +138,15 @@ X. Exit makedrive
   then compressed and scanned for restore. Use this for 10.9 Mavericks
   (which has no Apple-hosted download source) or for any image you already
   have.
-- **2. Download installer from Apple.** Fetches the Apple software-update
-  catalog, lists all available macOS installers (10.7 through current,
-  except 10.9), and downloads the one you choose directly from Apple. The
-  installer is processed through the same pipeline as option 1, and the
-  temporary download is cleaned up automatically. 10.9 Mavericks isn't
-  available from Apple and must be added through option 1.
+- **2. Download and add installer from Apple.** Fetches the Apple
+  software-update catalog, lists all available macOS installers (10.7
+  through current, except 10.9), and downloads the one you choose
+  directly from Apple. Once downloaded, it's processed through the same
+  pipeline as option 1 automatically, with no separate step to trigger:
+  verified, built into a restorable image, and compressed and scanned,
+  landing in restorekit ready to use. The temporary download is cleaned up
+  automatically. 10.9 Mavericks isn't available from Apple and must be
+  added through option 1.
 - **3. Compress and scan DMGs for restore.** Explicitly checks the DMGs in
   restorekit, compressing any that aren't already compressed and adding
   `asr` scan data where it's missing. Images added through options 1 or 2
@@ -294,7 +297,11 @@ Apple-provided `.pkg` file or the `.dmg` containing it. If a `.dmg` is
 provided, makedrive mounts it, locates the package automatically, and
 unmounts it when finished. makedrive assembles the installer app from the
 package and continues as normal. The package's obsolete installation
-scripts, which fail on current systems, are bypassed entirely.
+scripts, which fail on current systems, are bypassed entirely. Once the
+add has finished, makedrive asks whether to delete the installer app it
+assembled in `/Applications`, the same question option 2 asks after a
+download. If the add failed because the package was the wrong one, answer
+Y so makedrive asks for the package again next time.
 
 Mavericks (10.9) uses the same flat-package layout, and while Apple never
 published a package for it, makedrive accepts one from your own archive
@@ -319,19 +326,20 @@ entry's configuration:
 
 ---
 
-## Downloading Installers from Apple
+## Downloading and Adding Installers from Apple
 
-Main Menu option 2 fetches a macOS installer directly from Apple, so you
-don't need to visit the App Store first or already have anything sitting
-in `/Applications`. It's the fastest way to add an installer to restorekit
-if you don't already have one on hand.
+Main Menu option 2 fetches a macOS installer directly from Apple and adds
+it to restorekit in the same step, so you don't need to visit the App
+Store first, already have anything sitting in `/Applications`, or trigger
+a separate add afterward. It's the fastest way to get an installer into
+restorekit if you don't already have one on hand.
 
 When you choose option 2, makedrive fetches Apple's software-update
 catalog and lists every macOS installer it found, from 10.7 Lion through
 the current release, along with its download size:
 
 ```
-Choose a macOS installer to download from Apple:
+Choose a macOS installer to download and add to restorekit:
 
   10.9 Mavericks is not available from Apple - add it manually via option 1.
 
@@ -341,17 +349,38 @@ Choose a macOS installer to download from Apple:
 
   X. Return to Main Menu
 
-Enter a number to download, or X to return:
+Enter a number to download and add, or X to return:
 ```
 
 (The exact list, order, and sizes reflect what's currently available from
 Apple and the macOS versions defined in makedrive.conf.)
+
+Before it lists anything, makedrive brings makedrive.conf up to date with
+that catalog, so every entry is labeled with the release Apple is offering
+right now and is checked against that same build once it has downloaded.
 
 Pick the installer you want and hit return. makedrive downloads it
 straight from Apple's servers with a progress bar, then processes it
 through the same pipeline as option 1: the result is verified, compressed,
 and scanned for restore before it lands in restorekit. Temporary download
 files are cleaned up automatically once the process finishes.
+
+The download also leaves a full installer app in `/Applications` along the
+way (the same kind of app you'd get from the App Store), and those run
+several gigabytes. Once the add has finished, makedrive shows where that
+app is and asks whether to delete it:
+
+```
+Delete it to free up disk space? Y/N:
+```
+
+Answer Y to remove it, or anything else to keep it. The image in
+restorekit doesn't need the app, and building drives never reads it, so
+keep it only if you want the installer app itself. If the add didn't
+finish, keeping the app lets you try again through option 1 without
+downloading a second time, since option 2 always fetches a fresh copy.
+Anything typed while the download and build were running is discarded
+before the question appears, so a stray Return can't answer it for you.
 
 10.9 Mavericks is the one exception. Apple no longer hosts it anywhere, so
 it isn't available through option 2 at all. If you need 10.9, add it
@@ -391,6 +420,10 @@ Main Menu option 4 builds a drive. First choose a build type:
 
 Build types and the volumes they contain are defined in makedrive.conf, so
 the exact list reflects your configuration.
+
+Before it asks for a disk, makedrive confirms that every image the chosen
+build type needs is already in restorekit. If any are missing it lists
+them and returns to the build type list without touching a drive.
 
 After choosing a build type you're asked whether the contents of restorekit
 should also be copied to a **DataDrive** volume on the target. A populated
