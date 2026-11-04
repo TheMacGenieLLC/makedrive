@@ -76,6 +76,24 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   wrong item, the build type menu's R option no longer continues into disk
   selection with no type chosen, and a menu whose input has ended exits
   instead of redrawing indefinitely.
+- **Bigger installer images for macOS 26 and 27:** a finished macOS 26 image
+  turned out to be 97% full, with less than a gigabyte to spare. The working
+  image for 26 and 27 grows from 20 to 21 GB, and their partitions on the
+  drive from 22 to 23 GB. A full Apple Silicon and Intel drive now needs about
+  260 GB (it was 250).
+- **Interrupted downloads clean up after themselves:** installer downloads,
+  the working image, and the version check files now all live in one scratch
+  folder that cleanup always removes. Before, an interrupted download could
+  leave a folder of several gigabytes behind that cleanup never looked in.
+- **Time Machine backup disks are never erased:** the disk list used to
+  offer every attached disk, a backup disk included, and a wrong number
+  typed there would have erased it. makedrive now names the backup disks
+  under the list, refuses to erase one, and checks again right before it
+  formats anything, and it won't even eject one afterwards. It recognizes a
+  backup disk by what it's set up as (`tmutil`), by the APFS Backup volume
+  role, or by an older backup's `Backups.backupdb` folder, and it only ever
+  reads to find out. A disk number must also be digits now, so a slice like
+  `6s2` can't slip past the whole-disk checks.
 - **Closing the Terminal window cleans up:** a closed window used to end
   makedrive on the spot, leaving its lock file and scratch space (which
   can hold a multi-gigabyte installer image) behind. It now runs the same

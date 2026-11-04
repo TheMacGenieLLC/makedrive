@@ -9,9 +9,10 @@ pass. A single makedrive disk can carry many macOS installers side by side,
 from the oldest retail DVDs (10.3 Panther) through the current release, so
 you can boot or re-install almost any Mac from one drive.
 
-> **Note:** makedrive was historically a service provider diagnostic and
-> triage tool. Those diagnostic features have been removed, and it's now
-> focused on building macOS install drives.
+> **Note:** makedrive started life as a service provider diagnostic and
+> triage tool. It's now focused on building macOS install drives, though it
+> can still build Intel diagnostic drives (ASD, AXD, and the Blank Board
+> Serializer) from images you supply.
 
 ---
 
@@ -22,6 +23,9 @@ you can boot or re-install almost any Mac from one drive.
 - **Guided image management:** add installers from within the script. Each
   one is verified by volume name and macOS build number, then automatically
   compressed and scanned for `asr` restore.
+- **Diagnostic drives:** Apple Service Diagnostics, Apple Server
+  Diagnostics, and the AST Blank Board Serializer for Intel Macs through the
+  2015 model years, built from your own archive of images.
 - **App Store installer processing:** runs `createinstallmedia` for you
   (Mojave and later use one path, Mavericks through High Sierra use another)
   and strips the App Store receipt.
@@ -34,6 +38,8 @@ you can boot or re-install almost any Mac from one drive.
   Run it from the installer's Terminal to work around expired installer
   signing certificates that Apple hasn't re-issued.
 - **Apple Silicon and Intel** hosts, with boot-disk protection on both.
+- **Time Machine disks are off limits:** makedrive never offers a Time Machine
+  backup disk for erasing, and looks again before it formats anything.
 
 ## Requirements
 
@@ -79,8 +85,9 @@ run it once. makedrive migrates it into place once it has root.
 
 ## Documentation
 
-The full manual, including configuration details and the complete
-changelog, is in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
+The full manual, including configuration details, is in
+**[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**. The release history is in
+**[docs/RELEASE_HISTORY.md](docs/RELEASE_HISTORY.md)**.
 
 ## Uninstalling
 

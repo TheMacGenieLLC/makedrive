@@ -143,8 +143,8 @@ X. Exit makedrive
   through current, except 10.9), and downloads the one you choose
   directly from Apple. Once downloaded, it's processed through the same
   pipeline as option 1 automatically, with no separate step to trigger:
-  verified, built into a restorable image, and compressed and scanned,
-  landing in restorekit ready to use. The temporary download is cleaned up
+  verified, built into an image, placed in restorekit, and then compressed
+  and scanned, ready to use. The temporary download is cleaned up
   automatically. 10.9 Mavericks isn't available from Apple and must be
   added through option 1.
 - **3. Compress and scan DMGs for restore.** Explicitly checks the DMGs in
@@ -219,6 +219,13 @@ makedrive.conf. When Apple publishes a newer minor release for a macOS
 version you track, makedrive updates the build number (and the version
 shown in menus and volume names) in makedrive.conf automatically, and notes
 the change above the Main Menu.
+
+makedrive always builds the newest release Apple offers, and it only counts
+an image that matches the release in makedrive.conf. When a point release
+arrives (26.7 becoming 26.7.1, say), the file makedrive expects is renamed
+to match, so the older image is no longer used and the new one shows up as
+missing until you add it. The older image stays in restorekit until you
+delete it, which you can do whenever you like to reclaim the space.
 
 ---
 
@@ -314,8 +321,9 @@ afterward, but it runs as the administrator and builds an installer from
 whatever package you provide, so the package's authenticity is your
 responsibility.
 
-Two deploy types are supported, both handled automatically based on the
-entry's configuration:
+Installers use one of two deploy types, both handled automatically based
+on the entry's configuration (diagnostic images have their own, covered
+under [Diagnostic Drives](#diagnostic-drives)):
 
 - **GENERIC:** a Mac App Store installer processed with
   `createinstallmedia`. Mojave and later use one flag set, Mavericks
@@ -361,9 +369,10 @@ right now and is checked against that same build once it has downloaded.
 
 Pick the installer you want and hit return. makedrive downloads it
 straight from Apple's servers with a progress bar, then processes it
-through the same pipeline as option 1: the result is verified, compressed,
-and scanned for restore before it lands in restorekit. Temporary download
-files are cleaned up automatically once the process finishes.
+through the same pipeline as option 1: the installer is verified and built
+into an image, which is placed in restorekit and then compressed and scanned
+for restore. Temporary download files are cleaned up automatically once the
+process finishes, and also if you stop makedrive partway through.
 
 The download also leaves a full installer app in `/Applications` along the
 way (the same kind of app you'd get from the App Store), and those run
@@ -444,8 +453,22 @@ Intel Macs the boot disk is identified with `bless`; on Apple Silicon the
 boot volume is protected at the system level and makedrive recognizes it as
 well.
 
-Once a valid disk number is entered, no further input is needed until
-imaging finishes. `asr` decompresses and restores the images, and this is
+It won't erase a Time Machine backup disk either. Any disk that holds a
+backup is named under the disk list and refused if you pick it. makedrive
+finds them by asking `tmutil` which backup disks are mounted, by looking for
+APFS volumes that have the Backup role (which works even for a backup disk
+that isn't mounted or isn't set up on this Mac), and by looking for the
+`Backups.backupdb` folder that older backup disks carry. It only ever reads
+to find out, and it checks again just before formatting, in case a different
+disk was plugged in under the same number. If a backup is mounted but
+makedrive can't tell which disk it is on, it says so under the list, and then
+the disk you pick is up to you. An older backup disk that isn't mounted and
+isn't set up on this Mac leaves no trace to find, so unplug disks you don't
+want near a build.
+
+Once you pick a disk, makedrive shows it and asks you to confirm the erase
+(Y to continue, N to choose again). After that, no further input is needed
+until imaging finishes. `asr` decompresses and restores the images, and this is
 CPU-intensive and I/O-intensive, so the host may be sluggish for other work
 in the meantime. When the build completes, makedrive asks whether you'd
 like to image another disk.
@@ -587,7 +610,7 @@ makedrive's tools require root on the host, but because makedrive is an
 open shell script, its behavior can be readily audited against your
 security policy.
 
-makedrive makes network connections in four situations, all of which can be
+makedrive makes network connections in six situations, all of which can be
 avoided if you prefer an offline workflow:
 
 1. **Version checking.** At launch makedrive fetches Apple's software-update
@@ -596,7 +619,14 @@ avoided if you prefer an offline workflow:
    The catalog URLs are defined in makedrive.conf. A network failure here
    isn't fatal: makedrive simply leaves the configuration unchanged and
    continues.
-2. **PIL (Pillow) installation.** On first launch makedrive checks whether
+2. **Installer downloads.** Only when you choose Main Menu option 2, which
+fetches the software-update catalog again to list what's available and
+then downloads the installer you pick directly from Apple's servers.
+3. **Installer assets.** While it builds a macOS 10.14 or later installer
+image, `createinstallmedia` downloads a few extra assets from Apple, which
+is Apple's own tool doing it. Adding a ready-made DMG to restorekit instead
+involves no download.
+4. **PIL (Pillow) installation.** On first launch makedrive checks whether
    the Pillow Python imaging library is installed. If it isn't, makedrive
    explains what it's for and asks before installing it via `pip` from the
    Python Package Index (PyPI). Pillow is used to normalize volume icon
@@ -605,13 +635,13 @@ avoided if you prefer an offline workflow:
    explains how to be asked again later. Declining or a failed installation
    changes nothing else: icons are still applied to volumes, but they may
    not appear in the boot picker on older hardware.
-3. **Xcode Command Line Tools installation.** If the Xcode Command Line
+5. **Xcode Command Line Tools installation.** If the Xcode Command Line
    Tools aren't present, makedrive offers to install them. Typing `I` to
    confirm hands off to Apple's own installer dialog
    (`xcode-select --install`), which downloads the tools from Apple's
    servers. makedrive then exits so installation can complete before the
    next run.
-4. **Pushover notifications.** Only if you configure them (Main Menu
+6. **Pushover notifications.** Only if you configure them (Main Menu
    option 6), and only to send the notification you requested.
 
 makedrive.conf is the configuration that drives partitioning and
@@ -625,12 +655,12 @@ way you treat administrator access to the machine itself. Pushover
 credentials are stored in your login keychain rather than in any file on
 disk.
 
-### Installer binary re-signing (10.10 through 10.15)
+### Installer binary re-signing (10.9 through 10.15)
 
 Apple's kernel maintains a trust cache, a per-release list of known
 Apple-shipped binaries. When a binary carries Apple's "platform"
 code-signing marker, the kernel validates its cryptographic hash against
-this list before allowing it to run. Installer binaries from 10.10 through
+this list before allowing it to run. Installer binaries from 10.9 through
 10.15 carry that marker, but their hashes are absent from the trust caches
 of current host systems, which only include binaries shipped with recent
 OS releases. The result is that the kernel terminates them immediately on
@@ -656,7 +686,7 @@ A few important boundaries on what this process does and doesn't affect:
   content that `createinstallmedia` copies onto the bootable installer
   volume (the operating system files, frameworks, and kernel) comes
   directly from Apple's original sources and is never modified.
-- **Re-signing is limited to 10.10 through 10.15.** Installers for macOS 11
+- **Re-signing is limited to 10.9 through 10.15.** Installers for macOS 11
   and later are currently present in the trust caches of modern host
   systems and run without re-signing. Re-signing them would additionally
   risk breaking the resulting bootable installer on Apple Silicon

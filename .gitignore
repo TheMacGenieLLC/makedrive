@@ -1,2 +1,4 @@
 .DS_Store
 .claude
+# local test rigs and checks, kept out of the repo on purpose
+/tools/

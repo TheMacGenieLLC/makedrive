@@ -25,6 +25,8 @@ lastBuildError=""
 okToCopyData=""
 okToErase=""
 stayInMainMenuLoop=""
+timeMachineDiskID=""
+timeMachineUnreadable=""
 trackToTake=""
 
 # Script-internal temporary file paths. The lockfile must live at a fixed,
@@ -763,7 +765,7 @@ add_resign_installer_bundle () {
 # add_mas_createinstallmedia_impl
 # Shared implementation for both createinstallmedia wrapper functions below.
 # $7 = "mav" selects the --applicationpath path with codesign workarounds
-# (Yosemite through High Sierra); any other value uses --downloadassets
+# (Mavericks through High Sierra); any other value uses --downloadassets
 # (Mojave and later).
 #
 # $1 - Path to MAS install application given by user
@@ -947,6 +949,8 @@ add_mas_createinstallmedia_impl () {
 	echo "$6 is ready for use."
 	echo ""
 	disp_pause_for_input
+
+	return 0
 
 }
 
@@ -1180,7 +1184,7 @@ add_installer_from_pkg () {
 # ------------------------------------------------------------------------------
 # add_mas_createinstallmedia_mav
 # Processes a Mac App Store system installer into an install DMG that can be
-# restored to disk. Required from 10.10 Yosemite through 10.13 High Sierra,
+# restored to disk. Required from 10.9 Mavericks through 10.13 High Sierra,
 # which use the --applicationpath flag for createinstallmedia.
 #
 # $1 - Path to MAS install application given by user
@@ -1354,7 +1358,7 @@ download_fetch_and_process () {
 	_v="${confKey}VolName";         volName="${!_v}"
 
 	local tmpDir
-	tmpDir=$(mktemp -d -t makedrive-dl) || {
+	tmpDir=$(mktemp -d "$makedriveScratchDir/download.XXXXXX") || {
 		echo "Could not create temporary download directory."
 		echo ""
 		disp_pause_for_input
@@ -1917,7 +1921,7 @@ download_installer_menu () {
 	echo ""
 
 	local syncFile
-	syncFile=$(mktemp -t makedrive-dlcatalog) || {
+	syncFile=$(mktemp "$makedriveScratchDir/catalog.XXXXXX") || {
 		echo "Could not create temp file."
 		echo ""
 		disp_pause_for_input
@@ -2307,6 +2311,129 @@ conf_build_image_paths () {
 
 
 # ------------------------------------------------------------------------------
+# conf_derive_menus
+# Builds the image lists from makedrive.conf instead of keeping them by hand,
+# so an image block can be added or removed there without also editing a list.
+#
+# addMenuOrder lists image keys oldest to newest, derived from every MenuLabel
+# key in the conf (reversed, since new blocks are added at the top of that
+# file). Installer and diagnostic key families alike are discovered this way.
+# addMenuInstallers and addMenuDiagnostics split it for the add image
+# sub-menus and the quick deploy chooser: installer keys carry the inst
+# prefix, every other key family is a diagnostic. imageFilePaths follows from
+# them through conf_build_image_paths.
+#
+# $1 - Path to the conf file the keys are read from
+# ------------------------------------------------------------------------------
+conf_derive_menus () {
+
+	local confFile="$1" _menuKey _key
+
+	addMenuOrder=()
+	while IFS= read -r _menuKey; do
+		addMenuOrder+=( "$_menuKey" )
+	done < <(grep -o '^[A-Za-z][A-Za-z0-9]*MenuLabel=' "$confFile" | sed 's/MenuLabel=$//' | tail -r)
+
+	addMenuInstallers=()
+	addMenuDiagnostics=()
+	for _key in "${addMenuOrder[@]}"; do
+		if [[ "$_key" == inst* ]]; then
+			addMenuInstallers+=( "$_key" )
+		else
+			addMenuDiagnostics+=( "$_key" )
+		fi
+	done
+
+	conf_build_image_paths
+
+}
+
+
+# ------------------------------------------------------------------------------
+# conf_bt_detail_size
+# Sums the VolSize of every non-dataDrive key given and prints the total
+# rounded up to the nearest 10 (as a bare number, the GB is added by the
+# caller). Uses VolSize, not NewImageVolSize, since that is what lands on the
+# target disk.
+#
+# $@ - Image keys of one build type's volume list
+# ------------------------------------------------------------------------------
+conf_bt_detail_size () {
+
+	local _key _sizeVar _sizes=""
+
+	for _key in "$@"; do
+		[ "$_key" = "dataDrive" ] && continue
+		_sizeVar="${_key}VolSize"
+		_sizes="$_sizes ${!_sizeVar%G}"
+	done
+
+	awk -v vals="$_sizes" 'BEGIN {
+		n = split(vals, a, " ")
+		total = 0
+		for (i = 1; i <= n; i++) total += a[i]
+		c = int(total / 10)
+		if (c * 10 < total) c++
+		printf "%d", c * 10
+	}'
+
+}
+
+
+# ------------------------------------------------------------------------------
+# conf_derive_build_types
+# Builds the build type registry from makedrive.conf.
+#
+# buildTypeNums (the valid type numbers, in menu display order) comes from
+# every buildTypeXX_label key, sorted numerically ascending, so a build type
+# can be added, removed, or renumbered there without also editing a list.
+#
+# buildTypeXX_detail is computed for any type in buildTypeNums that does not
+# define one, from the VolSize of its volumes, so it stays correct whatever
+# number a type is given or which keys it lists. A type that already defines
+# a detail in the conf (DataDrive Only, whose "0G = use remaining space"
+# volume can't be summed) is left alone.
+#
+# $1 - Path to the conf file the labels are read from
+# ------------------------------------------------------------------------------
+conf_derive_build_types () {
+
+	local confFile="$1"
+	local _btLabelNum _btNum _btDetailVar _btVols _btHasImageKey _btHasDataDrive _btVolKey
+
+	buildTypeNums=()
+	while IFS= read -r _btLabelNum; do
+		buildTypeNums+=( "$_btLabelNum" )
+	done < <(grep -o '^buildType[0-9][0-9]*_label=' "$confFile" | sed 's/^buildType//; s/_label=$//' | sort -n)
+
+	for _btNum in "${buildTypeNums[@]}"; do
+		_btDetailVar="buildType${_btNum}_detail"
+		[ -n "${!_btDetailVar}" ] && continue
+
+		_btVols=()
+		eval "_btVols=( \"\${buildType${_btNum}_volumes[@]}\" )"
+
+		_btHasImageKey=0 _btHasDataDrive=0
+		for _btVolKey in "${_btVols[@]}"; do
+			if [ "$_btVolKey" = "dataDrive" ]; then
+				_btHasDataDrive=1
+			else
+				_btHasImageKey=1
+			fi
+		done
+		[ "$_btHasImageKey" = "0" ] && continue
+
+		if [ "$_btHasDataDrive" = "1" ]; then
+			printf -v "$_btDetailVar" 'About %sGB plus DataDrive' "$(conf_bt_detail_size "${_btVols[@]}")"
+		else
+			printf -v "$_btDetailVar" 'About %sGB' "$(conf_bt_detail_size "${_btVols[@]}")"
+		fi
+	done
+
+}
+
+
+# ------------------------------------------------------------------------------
 # conf_version_newer
 # Returns 0 (true) if $1 is strictly newer than $2 as a dot-separated version.
 # Compares integer components left to right; missing components treated as 0.
@@ -2491,7 +2618,7 @@ startup_sync_versions () {
 	if [ "$cacheFresh" = "1" ]; then
 		syncVarsFile="$cacheFile"
 	else
-		syncVarsFile=$(mktemp -t makedrive-syncvars) || return 0
+		syncVarsFile=$(mktemp "$makedriveScratchDir/syncvars.XXXXXX") || return 0
 
 		printf "Verifying latest macOS installer versions with Apple..."
 
@@ -2610,9 +2737,133 @@ build_ask_to_run_again () {
 
 
 # ------------------------------------------------------------------------------
+# build_disks_behind_volume
+# Prints the whole-disk number(s) behind the mounted volume at $1, one per line:
+# its own whole disk and, on APFS, the physical disk under the synthesized
+# container. Erasing either one takes the volume with it, so both count.
+# Prints "unreadable" instead when diskutil has nothing to say about the volume.
+# ------------------------------------------------------------------------------
+build_disks_behind_volume () {
+
+	diskutil info "$1" 2>/dev/null | awk -F': *' '
+		/^ *(Part of Whole|APFS Physical Store):/ {
+			d = $2
+			gsub(/ /, "", d)
+			sub(/^disk/, "", d)
+			sub(/s.*$/, "", d)
+			if (d != "") { print d; found = 1 }
+		}
+		END { if (!found) print "unreadable" }'
+
+}
+
+
+# ------------------------------------------------------------------------------
+# build_disks_with_backup_volumes
+# Prints the whole-disk number(s), one per line, of every APFS container that
+# holds a volume with the Backup role, which is what macOS gives a volume that
+# Time Machine uses. The role is stored on the volume itself, so this still
+# sees a backup disk that is locked, unmounted, or not set up on this Mac.
+# ------------------------------------------------------------------------------
+build_disks_with_backup_volumes () {
+
+	diskutil apfs list 2>/dev/null | awk '
+		/^\+-- Container /                              { container = ""; stores = "" }
+		/APFS Container Reference:/                     { container = $NF }
+		/APFS Physical Store Disk:/                     { stores = stores " " $NF }
+		/APFS Volume Disk \(Role\):.*\(Backup\)[ \t]*$/ { print container stores }
+	' | tr ' ' '\n' | sed -E -e 's/^disk//' -e 's/s.*$//' | grep -E '^[0-9]+$'
+
+}
+
+
+# ------------------------------------------------------------------------------
+# build_get_time_machine_disks
+# Sets $timeMachineDiskID to the whole-disk number(s) that hold a Time Machine
+# backup, with the 'disk' prefix stripped (e.g. "6 7" on APFS, for the physical
+# disk plus its container). build_choose_target_device refuses any of these as an
+# erase target. $timeMachineUnreadable is set to 1 when a backup is mounted
+# right now but diskutil couldn't say which disk it is on, which means the
+# check is blind to it.
+#
+# Read-only: it asks tmutil, mount and diskutil questions and looks for one
+# folder name, and changes nothing. No single signal sees every backup disk, so
+# it takes three:
+#   - a local backup destination this Mac has set up and mounted (tmutil)
+#   - an APFS volume with the Backup role, mounted or not, set up here or not
+#   - a mounted volume holding a Backups.backupdb folder, which is how an older
+#     HFS+ backup disk looks from outside
+# Only volumes on local disks are probed for the folder, because looking inside
+# a network share that has gone away can hang.
+# A backup disk that is HFS+, unmounted and not set up on this Mac shows none of
+# these, so the confirmation before an erase is still the last word on those.
+# ------------------------------------------------------------------------------
+build_get_time_machine_disks () {
+
+	local mountPoint candidates
+
+	candidates="$(
+		tmutil destinationinfo 2>/dev/null | awk '
+			/^(>|=)/                          { kind = "" }
+			/^Kind/                           { sub(/^Kind *: */, ""); kind = $0 }
+			/^Mount Point/ && kind == "Local" { sub(/^Mount Point *: */, ""); print }
+		' | while IFS= read -r mountPoint; do
+			build_disks_behind_volume "$mountPoint"
+		done
+		mount 2>/dev/null | awk '/^\/dev\/disk/ { sub(/^[^ ]+ on /, ""); sub(/ \([^)]*\)$/, ""); print }' |
+		while IFS= read -r mountPoint; do
+			[ -d "$mountPoint/Backups.backupdb" ] && build_disks_behind_volume "$mountPoint"
+		done
+		build_disks_with_backup_volumes
+	)"
+
+	# each disk once, in number order, however many of the signals saw it
+	timeMachineUnreadable=""
+	case "$candidates" in
+	*unreadable* ) timeMachineUnreadable="1" ;;
+	esac
+	timeMachineDiskID="$(printf '%s\n' "$candidates" | grep -E '^[0-9]+$' | sort -nu | tr '\n' ' ')"
+	timeMachineDiskID="${timeMachineDiskID% }"
+
+}
+
+
+# ------------------------------------------------------------------------------
+# build_disk_is_time_machine
+# Succeeds when whole disk number $1 holds a Time Machine backup. It looks again
+# every time instead of remembering: a disk can be attached, or swapped for
+# another that takes the same number, at any point after makedrive starts.
+# ------------------------------------------------------------------------------
+build_disk_is_time_machine () {
+
+	build_get_time_machine_disks
+	[[ " $timeMachineDiskID " == *" $1 "* ]]
+
+}
+
+
+# ------------------------------------------------------------------------------
+# build_eject_target_disk
+# Ejects disk $1 once its build is over, unless it turns out to hold a Time
+# Machine backup (the disk was swapped after it was chosen), which is left
+# exactly as it was found.
+# ------------------------------------------------------------------------------
+build_eject_target_disk () {
+
+	if build_disk_is_time_machine "$1"; then
+		return 0
+	fi
+
+	diskutil eject "disk$1"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # build_choose_target_device
-# Asks to choose the disk to wipe for imaging.  Will only exit the function once 
+# Asks to choose the disk to wipe for imaging.  Will only exit the function once
 # valid input is provided and the disk chosen is confirmed as the one to wipe.
+# The startup disk and any disk holding a Time Machine backup are refused.
 # ------------------------------------------------------------------------------
 build_choose_target_device () {
 
@@ -2621,10 +2872,23 @@ build_choose_target_device () {
 	# route the user to the next input and verify it is the disk they want to
 	# build onto.
 	while [ "$diskNum" == "" ]; do
-		
+
 		disp_print_header
-		
+
 		diskutil list
+
+		# Say which disks are off limits before they're asked for, so a refusal
+		# below is no surprise.
+		build_get_time_machine_disks
+		if [ -n "$timeMachineDiskID" ]; then
+			echo "Time Machine backup disks: disk${timeMachineDiskID// /, disk}"
+			echo "(makedrive will not erase these)"
+		fi
+		if [ -n "$timeMachineUnreadable" ]; then
+			echo "makedrive could not tell which disk holds a Time Machine backup that is"
+			echo "mounted now, so make sure the disk you pick is not that one."
+		fi
+
 		echo ""
 		echo "Enter the disk number you would like to erase & restore. For example,"
 		echo "if the disk you want to erase is disk2, enter \"2\" and hit return."
@@ -2645,9 +2909,11 @@ build_choose_target_device () {
 		elif [ "$diskNum" = "X" ] || [ "$diskNum" = "x" ]; then
 			break
 
-		# If the disk number doesn't exist, kick it back and ask again.  This 
-		# should handle any kind of spurious inputs you can encounter.
-		elif [ ! -e "/dev/disk$diskNum" ]; then
+		# If the disk number doesn't exist, kick it back and ask again.  This
+		# should handle any kind of spurious inputs you can encounter. Anything
+		# but digits is turned away too: a slice like 2s1 exists as a device,
+		# but would slip past the whole-disk checks below.
+		elif [[ "$diskNum" == *[!0-9]* ]] || [ ! -e "/dev/disk$diskNum" ]; then
 			disp_print_header
 			
 			echo "That disk number doesn't exist according to the OS. Choose another disk"
@@ -2667,7 +2933,18 @@ build_choose_target_device () {
 			echo ""
 			disp_pause_for_input
 			diskNum=""
-			
+
+		# A Time Machine backup is never an erase target, however it got named.
+		# The formatting steps check again before they touch a disk.
+		elif build_disk_is_time_machine "$diskNum"; then
+			disp_print_header
+
+			echo "disk$diskNum holds a Time Machine backup, and makedrive never erases one."
+			echo "Choose another disk to erase."
+			echo ""
+			disp_pause_for_input
+			diskNum=""
+
         # Asks if you are OK with erasing the drive that you just chose. If you
         # aren't OK with it, it nulls the input and sends you back to the prompt
 		else
@@ -2730,7 +3007,7 @@ build_clean_vol_folder () {
 # $7 - pkgName     (AXD-PKG only: package filename inside the mounted source DMG)
 # $8 - pkgTgtVolName (AXD-PKG only: name Apple's package gives the target volume)
 #
-# Uses globals:  diskNum, windowCloseSleepInSeconds, spotlightSleepInSeconds
+# Uses globals:  diskNum, spotlightSleepInSeconds
 # Sets global:   lastBuildError
 # Returns:       0 success | 1 non-fatal error (rename/bless) | 2 fatal error (ASR)
 # ------------------------------------------------------------------------------
@@ -3033,7 +3310,7 @@ build_drives_start () {
 		build_run_build_task
 		local buildTaskResult=$?
 
-		diskutil eject "disk$diskNum"
+		build_eject_target_disk "$diskNum"
 
 		if [ "$buildTaskResult" = "0" ]; then
 			notify_pushover_send "Your installation drive has finished imaging."
@@ -3112,6 +3389,15 @@ build_format_target_disk () {
 	local partitionString=""
 	local numOfVolumes="${#volumesToMake[@]}"
 	local volumeCounter
+
+	# Whatever led here, a Time Machine backup is never partitioned. The disk
+	# picker already refuses one; this looks again because a disk can be
+	# swapped for another that takes the same number after it was confirmed.
+	if build_disk_is_time_machine "$1"; then
+		echo ""
+		echo "disk$1 holds a Time Machine backup, and makedrive never erases one."
+		return 1
+	fi
 
 	# Build the partition argument string by stepping through each volume entry.
 	# Each entry contributes three fields: filesystem type, start name, and size.
@@ -3308,6 +3594,12 @@ quick_deploy_format_disk () {
 
 	disp_print_header
 
+	# The same last line of defense as build_format_target_disk
+	if build_disk_is_time_machine "$diskNum"; then
+		echo "disk$diskNum holds a Time Machine backup, and makedrive never erases one."
+		return 1
+	fi
+
 	echo "Preparing disk$diskNum for restoration..."
 	echo ""
 
@@ -3396,7 +3688,7 @@ quick_deploy_start () {
 
 		disp_print_header
 		echo "Ejecting disk..."
-		diskutil eject "disk$diskNum"
+		build_eject_target_disk "$diskNum"
 
 		if [ "$deployRC" = "0" ] && [ -z "$lastBuildError" ]; then
 			notify_pushover_send "Your USB/SD card has finished imaging."
@@ -4194,10 +4486,13 @@ notify_pushover_test () {
 
 # ------------------------------------------------------------------------------
 # postflight_cleanup
-# Removes the lockfile to prevent failed subsequent launches and clears any
-# leftover temp files (installer sparseimage, version-sync scratch files).
-# Also corrects permissions on the restorekit folder so it can be manipulated
-# in Finder without issue, since makedrive adds files into it as root.
+# Removes the lockfile to prevent failed subsequent launches and the scratch
+# directory, which holds the installer sparseimage, downloads, and the
+# version-check files, so an interrupted run doesn't leave those behind. (The
+# one temp file outside it is the .new.dmg a compression writes beside its
+# image in restorekit; the next compression of that image replaces it.) Also
+# corrects permissions on the restorekit folder so it can be manipulated in
+# Finder without issue, since makedrive adds files into it as root.
 # ------------------------------------------------------------------------------
 postflight_cleanup () {
 
@@ -4224,9 +4519,9 @@ postflight_cleanup () {
 		[ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$executionPath/restorekit"
 	fi
 
-	rm -f "${TMPDIR:-/tmp}/makedrive-syncvars."* "${TMPDIR:-/tmp}/makedrive-dlcatalog."*
-
-	exit
+	# explicit, so a quit run as true root (no SUDO_USER) doesn't report failure
+	# just because the chown above was skipped
+	exit 0
 
 }
 
@@ -4845,6 +5140,15 @@ process_check_dmgs () {
 	return 0
 }
 
+# Lets a test harness load every function above without running the launch
+# sequence below. It only works when the script is sourced: run normally, the
+# return fails and the exit stops the script, so it can never skip the startup
+# checks and carry on.
+if [ -n "${MAKEDRIVE_SOURCE_ONLY:-}" ]; then
+	# shellcheck disable=SC2317  # exit 0 is the backstop when run rather than sourced
+	return 0 2>/dev/null || exit 0
+fi
+
 # If the script has to be killed, clean up the temp/lock files. SIGHUP is what
 # arrives when the Terminal window is closed; untrapped it ends the script on
 # the spot and leaves the lockfile and scratch directory (which can hold a
@@ -4884,98 +5188,11 @@ fi
 # shellcheck source=/dev/null
 . "$_makedrive_active_conf"
 
-# ------------------------------------------------------------------------------
-# Configuration derivation
 # Values computed from makedrive.conf rather than hand-maintained there, so
-# they can't drift out of sync with the image/build-type blocks that back them.
-# ------------------------------------------------------------------------------
-
-# addMenuOrder lists image keys oldest to newest, derived from every MenuLabel
-# key in makedrive.conf (reversed, since new blocks are added at the top of
-# that file) so an image block can be added or removed there without also
-# editing this list. Installer and diagnostic key families alike are
-# discovered this way. imageFilePaths derives from it for
-# presence/compression/scan checks.
-addMenuOrder=()
-while IFS= read -r _menuKey; do
-	addMenuOrder+=( "$_menuKey" )
-done < <(grep -o '^[A-Za-z][A-Za-z0-9]*MenuLabel=' "$_makedrive_active_conf" | sed 's/MenuLabel=$//' | tail -r)
-unset _menuKey
-# addMenuInstallers and addMenuDiagnostics split addMenuOrder for the add
-# image sub-menus and the quick deploy chooser: installer keys carry the
-# inst prefix; every other key family is a diagnostic.
-addMenuInstallers=()
-addMenuDiagnostics=()
-for _key in "${addMenuOrder[@]}"; do
-	if [[ "$_key" == inst* ]]; then
-		addMenuInstallers+=( "$_key" )
-	else
-		addMenuDiagnostics+=( "$_key" )
-	fi
-done
-unset _key
-
-conf_build_image_paths
-
-# buildTypeNums (the registry of valid type numbers, in menu display order)
-# is derived from every buildTypeXX_label key in makedrive.conf, sorted
-# numerically ascending, so a build type can be added, removed, or renumbered
-# there without also editing this list.
-buildTypeNums=()
-while IFS= read -r _btLabelNum; do
-	buildTypeNums+=( "$_btLabelNum" )
-done < <(grep -o '^buildType[0-9][0-9]*_label=' "$_makedrive_active_conf" | sed 's/^buildType//; s/_label=$//' | sort -n)
-unset _btLabelNum
-
-# buildTypeXX_detail is derived, for any type number in buildTypeNums, from
-# the VolSize (not NewImageVolSize) of every non-dataDrive key in that type's
-# buildTypeXX_volumes array in makedrive.conf, summed and rounded up to the
-# nearest 10GB - so it stays correct regardless of which type number a build
-# type is given, or which keys it lists there. A type left with no
-# buildTypeXX_detail at all in makedrive.conf gets one computed here; a type
-# that already defines one there (e.g. DataDrive Only, whose "0G = use
-# remaining space" volume isn't summable) is left untouched.
-_bt_detail_size () {
-	local _key _sizeVar _sizes=""
-	for _key in "$@"; do
-		[ "$_key" = "dataDrive" ] && continue
-		_sizeVar="${_key}VolSize"
-		_sizes="$_sizes ${!_sizeVar%G}"
-	done
-	awk -v vals="$_sizes" 'BEGIN {
-		n = split(vals, a, " ")
-		total = 0
-		for (i = 1; i <= n; i++) total += a[i]
-		c = int(total / 10)
-		if (c * 10 < total) c++
-		printf "%d", c * 10
-	}'
-}
-for _btNum in "${buildTypeNums[@]}"; do
-	_btDetailVar="buildType${_btNum}_detail"
-	[ -n "${!_btDetailVar}" ] && continue
-
-	_btVols=()
-	eval "_btVols=( \"\${buildType${_btNum}_volumes[@]}\" )"
-
-	_btHasImageKey=0 _btHasDataDrive=0
-	for _btVolKey in "${_btVols[@]}"; do
-		if [ "$_btVolKey" = "dataDrive" ]; then
-			_btHasDataDrive=1
-		else
-			_btHasImageKey=1
-		fi
-	done
-	[ "$_btHasImageKey" = "0" ] && continue
-
-	if [ "$_btHasDataDrive" = "1" ]; then
-		printf -v "$_btDetailVar" 'About %sGB plus DataDrive' "$(_bt_detail_size "${_btVols[@]}")"
-	else
-		printf -v "$_btDetailVar" 'About %sGB' "$(_bt_detail_size "${_btVols[@]}")"
-	fi
-done
-unset -f _bt_detail_size
-unset _btNum _btDetailVar _btVols _btHasImageKey _btHasDataDrive _btVolKey
+# they can't drift out of sync with the image and build type blocks that back
+# them. See conf_derive_menus and conf_derive_build_types.
+conf_derive_menus "$_makedrive_active_conf"
+conf_derive_build_types "$_makedrive_active_conf"
 
 # Performing individual checks once at start of execution, rather than every run
 # through the main application loop. The conf lint runs first so nothing else
@@ -5001,6 +5218,17 @@ unset _makedrive_legacy_conf _makedrive_active_conf
 
 migrate_pushover_credentials
 
+# Root-owned scratch space (mode 700, unpredictable name) for what makedrive
+# writes temporarily: the installer sparseimage, icon work, package expansion,
+# downloads, and the version check files. One directory means the cleanup
+# after an interrupt has one thing to remove. It comes before the version
+# check because that check uses it.
+makedriveScratchDir=$(mktemp -d "/var/tmp/makedrive-scratch.XXXXXX") || {
+	echo "Could not create the makedrive scratch directory."
+	exit 1
+}
+makedriveInstTmpImageFile="$makedriveScratchDir/makedrivetemp.sparseimage"
+
 startup_sync_versions
 
 # Ensure the support directory and its contents are owned by the invoking user
@@ -5008,14 +5236,6 @@ startup_sync_versions
 # root, so files it creates here are root-owned by default. This runs after the
 # version sync so the catalog cache it writes is covered on the same launch.
 [ -n "$SUDO_USER" ] && chown -Rf "$SUDO_USER" "$makedriveSupportDir"
-
-# Root-owned scratch space (mode 700, unpredictable name) for the installer
-# sparseimage, icon work, and package expansion.
-makedriveScratchDir=$(mktemp -d "/var/tmp/makedrive-scratch.XXXXXX") || {
-	echo "Could not create the makedrive scratch directory."
-	exit 1
-}
-makedriveInstTmpImageFile="$makedriveScratchDir/makedrivetemp.sparseimage"
 
 # Remove anything pre-planted at the fixed lockfile path (a symlink here
 # would otherwise redirect the root-owned touch) before creating our own.
