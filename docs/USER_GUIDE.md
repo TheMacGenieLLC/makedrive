@@ -453,18 +453,14 @@ Intel Macs the boot disk is identified with `bless`; on Apple Silicon the
 boot volume is protected at the system level and makedrive recognizes it as
 well.
 
-It won't erase a Time Machine backup disk either. Any disk that holds a
-backup is named under the disk list and refused if you pick it. makedrive
-finds them by asking `tmutil` which backup disks are mounted, by looking for
-APFS volumes that have the Backup role (which works even for a backup disk
-that isn't mounted or isn't set up on this Mac), and by looking for the
-`Backups.backupdb` folder that older backup disks carry. It only ever reads
-to find out, and it checks again just before formatting, in case a different
-disk was plugged in under the same number. If a backup is mounted but
-makedrive can't tell which disk it is on, it says so under the list, and then
-the disk you pick is up to you. An older backup disk that isn't mounted and
-isn't set up on this Mac leaves no trace to find, so unplug disks you don't
-want near a build.
+It won't erase a Time Machine backup disk either. makedrive names the
+backup disks it finds under the disk list and refuses any you pick. It only
+ever reads to find them, and it checks again just before formatting, in case
+a different disk was plugged in under the same number. If a backup is
+mounted but makedrive can't tell which disk it is on, it says so under the
+list, and then the disk you pick is up to you. An older backup disk that
+isn't mounted leaves no trace to find, so unplug disks you don't want near
+a build.
 
 Once you pick a disk, makedrive shows it and asks you to confirm the erase
 (Y to continue, N to choose again). After that, no further input is needed

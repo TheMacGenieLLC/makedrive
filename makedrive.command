@@ -188,7 +188,9 @@ MAKEDRIVE_ICON_NORM_PYEOF
 # dmg_apply_volume_icon
 # Copies the installer's custom icon onto an already-mounted volume and sets
 # the custom-icon flag. Tries ProductPageIcon.icns first (Tahoe and later),
-# then falls back to InstallAssistant.icns. Does nothing if neither is found.
+# then InstallAssistant.icns. Older installer apps (10.3 through 10.6) use
+# neither name, so it falls back to the icon CFBundleIconFile names, then to
+# the largest .icns in the bundle. Does nothing if none is found.
 #
 # $1 - Path to the installer application bundle (icon source)
 # $2 - Path to the mounted volume (e.g. /Volumes/MyVolume)
@@ -325,9 +327,7 @@ add_copy_single_dmg () {
 	disp_print_header
 
 	# If $5 is empty, we don't have a source DMG yet; prompt the user to find
-	# one. If $5 points to an existing file, use it directly. If $5 is set but
-	# the file doesn't exist, the installer has not been assembled yet - offer
-	# pkg extraction to source it from the Apple-provided flat package.
+	# one. If $5 points to an existing file, use it directly.
 	if [ "$5" = "" ]; then
 
 		echo "Drag the DMG for $1 into "
@@ -338,8 +338,7 @@ add_copy_single_dmg () {
 		# Dragging a file into Terminal backslash-escapes spaces (and other
 		# special characters) in the path. read -r keeps those backslashes
 		# verbatim, so the quoted path handed to hdiutil below would name a
-		# file that doesn't exist. Strip the escaping backslashes so the path
-		# matches the real file.
+		# file that doesn't exist.
 		imagePathToAdd="${imagePathToAdd//\\/}"
 
 	elif [ -f "$5" ]; then
@@ -364,9 +363,8 @@ add_copy_single_dmg () {
 	echo "Verifying disk image source and destination..."
 	echo ""
 	
-	# testDevice is a local variable that is set to the device ID of the mounted
-	# disk image.  Since we need to mount the image with its own name to verify
-	# if it is correct, we need the device ID to properly unmount. 
+	# Since we need to mount the image with its own name to verify if it is
+	# correct, we need the device ID to properly unmount.
 	IFS=$'\t' read -r testDevice testMountPoint < <(dmgtool_attach_parse "$imagePathToAdd" -readonly)
 
 	if [ -z "$testDevice" ]; then
@@ -400,11 +398,9 @@ add_copy_single_dmg () {
 		;;
 	esac
 	
-	# Unmount the disk image using the trimmed output from above.
 	hdiutil detach -quiet "$testDevice"
 		
-	# If the grep returns 0, that means it successfully matched the DMG,
-	# and the source image is what we want to add into restorekit.
+	# A match means the source image is what we want to add into restorekit.
 	if [ "$grepReturn" = "0" ]; then
 		
 		disp_print_header
@@ -417,7 +413,6 @@ add_copy_single_dmg () {
 		# directory hierarchy is not present
 		dmgBaseDir=$(dirname "$2")
 	
-		# If the directory doesn't exist, then create it to prevent errors
 		if [ ! -d "$dmgBaseDir" ]; then
 		
 			mkdir -p "$dmgBaseDir"
@@ -527,9 +522,7 @@ with open(sys.argv[1], 'r+b') as f:
 		
 		fi
 	
-	# If the grep returns non-zero, it means there is no match in the volumes
-	# folder for the intended image's correct volume name. This indicates the
-	# image either did not mount, or more likely, it is the wrong DMG.
+	# No match means the image did not mount or, more likely, is the wrong DMG.
 	else
 	
 		disp_print_header
@@ -580,7 +573,10 @@ add_create_install_dmg () {
 # nothing if it cannot be determined. This is the single source of truth for
 # both verification and error reporting; it never fails the caller.
 #
-# Three installer layouts are handled, newest first:
+# Four ways to find the build, tried in this order:
+#
+#   Explicit key: ProductBuildVersion in InstallInfo.plist, which makedrive
+#     writes when it assembles a 10.13 through 10.15 installer from the catalog.
 #
 #   New-format (Big Sur 11+): build metadata is inside SharedSupport.dmg, read
 #     from Assets.0.Build in the MobileAsset XML.
@@ -592,8 +588,7 @@ add_create_install_dmg () {
 #     nested inside InstallESD.dmg (older), so we mount whatever is needed and
 #     always detach both, in reverse order.
 #
-#   Fallback: a build-number-shaped token scanned out of InstallInfo.plist, for
-#     any installer that happens to record it there.
+#   Fallback: a build-number-shaped token scanned out of InstallInfo.plist.
 #
 # $1 - Path to the installer application bundle
 # ------------------------------------------------------------------------------
@@ -630,8 +625,7 @@ read_installer_build () {
 		return 0
 	fi
 
-	# InstallESD generation (10.7-10.15): read ProductBuildVersion from the
-	# SystemVersion.plist inside BaseSystem.dmg.
+	# InstallESD generation (10.7 through 10.15): build is in BaseSystem.dmg.
 	if [ -f "$esdDmg" ] || [ -f "$directBase" ]; then
 		local esdDevice="" baseDmg=""
 
@@ -664,8 +658,7 @@ read_installer_build () {
 	fi
 
 	# Fallback: read ProductBuildVersion from InstallInfo.plist.
-	# For catalog-assembled 10.15 installers this plist is the authoritative
-	# source; for others it provides a regex-scannable build token.
+	# Failing that, scan it for a build-shaped token.
 	if [ -f "$installInfo" ]; then
 		build=$(plutil -extract "ProductBuildVersion" raw -o - "$installInfo" 2>/dev/null)
 		[ -z "$build" ] && \
@@ -683,7 +676,7 @@ read_installer_build () {
 # verify_installer_build
 # Confirms that the installer application at $1 reports the expected macOS build
 # string $2. Delegates extraction to read_installer_build, which handles every
-# installer layout. An empty build string always returns success (permissive).
+# installer layout.
 #
 # Returns 0 if the builds match (or $2 is empty), non-zero otherwise.
 #
@@ -692,7 +685,6 @@ read_installer_build () {
 # ------------------------------------------------------------------------------
 verify_installer_build () {
 
-	# Empty build string: no build configured, skip verification.
 	[ -z "$2" ] && return 0
 
 	[ "$(read_installer_build "$1")" = "$2" ]
@@ -702,8 +694,9 @@ verify_installer_build () {
 
 # ------------------------------------------------------------------------------
 # add_mas_build_mismatch
-# Displays the standard build-mismatch error used by both createinstallmedia
-# functions when verify_installer_build returns non-zero.
+# Displays the standard build-mismatch error when verify_installer_build returns
+# non-zero. Called from add_mas_createinstallmedia_impl, which both
+# createinstallmedia wrappers use.
 #
 # $1 - Expected build string from the conf (optional)
 # $2 - Build string actually found in the installer (optional)
@@ -828,8 +821,7 @@ add_mas_createinstallmedia_impl () {
 
 		# Apple shipped a Sierra installer where CFBundleShortVersionString in
 		# Info.plist does not match the version createinstallmedia was built to
-		# expect. The binary checks this and forkbombs when they differ. Patch
-		# Info.plist to match what the binary expects before running.
+		# expect. The binary checks this and forkbombs when they differ.
 		# Patching Info.plist only breaks the bundle seal (CodeResources hash),
 		# not the Mach-O signatures; AMFI checks the latter, so this is safe.
 		local cimPlistVer cimBinVer cimMajor
@@ -1004,14 +996,12 @@ host_macos_version () {
 # pkg engines). This function replicates that wiring manually.
 #
 # Members are pulled individually with xar rather than expanding the whole
-# package, so the thin Payload can be extracted and version-checked first and
-# the multi-GB InstallESD.dmg is only extracted once the version matches. The
-# Payload's bundled InstallInfo.plist records the macOS version (e.g. 10.12.6)
-# but not the build; the exact build still lives only inside InstallESD.dmg, so
-# the authoritative build check (verify_installer_build) runs later against the
-# assembled app. This pre-check exists to catch the wrong package being supplied
-# before paying for the multi-GB extraction, comparing at major.minor
-# granularity so a point-release difference is left to the build check.
+# package, so a wrong package is caught from the thin Payload before the
+# multi-GB InstallESD.dmg is extracted. The Payload's InstallInfo.plist records
+# the macOS version (e.g. 10.12.6) but not the build, which lives only inside
+# InstallESD.dmg, so the authoritative build check (verify_installer_build) runs
+# later against the assembled app. The pre-check compares at major.minor so a
+# point-release difference is left to the build check.
 #
 # The InstallESD.dmg is moved (not copied) into the assembled app - a move on
 # the same volume is instant and uses no additional disk space.
@@ -1039,8 +1029,7 @@ add_installer_from_pkg () {
 	# pre-extraction check; empty if the name carries no version-shaped token.
 	expectedVer=$(printf '%s' "$2" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
 
-	# Shared failure exit used throughout: print each message line, clean up
-	# the expansion staging and any mounted source DMG, and pause. Callers
+	# Shared failure exit: print the message lines, clean up, and pause. Callers
 	# still return 1 themselves so control flow stays visible at each site.
 	_pkg_fail () {
 		local _failLine
@@ -1104,8 +1093,8 @@ add_installer_from_pkg () {
 
 	disp_print_header
 
-	# Locate the InstallESD.dmg member and the component directory holding it.
-	# Both the ESD and the thin Payload live side by side under that directory.
+	# Locate the InstallESD.dmg member and its component directory, which also
+	# holds the thin Payload.
 	esdMember=$(xar -tf "$pkgPath" 2>/dev/null | grep -m1 '/InstallESD.dmg$')
 	if [ -z "$esdMember" ]; then
 		_pkg_fail "This does not look like a macOS installer package (no InstallESD.dmg)."
@@ -1139,9 +1128,9 @@ add_installer_from_pkg () {
 		return 1
 	fi
 
-	# Pre-extraction version check. The thin app's InstallInfo.plist names the
-	# macOS version the bundled ESD provides; compare it (major.minor) to the
-	# version expected for the chosen installer before extracting the ESD.
+	# Pre-extraction version check: the thin app's InstallInfo.plist names the
+	# macOS version the bundled ESD provides; compare it (major.minor) to what
+	# the chosen installer expects.
 	instInfo="$stagedAppDir/Contents/SharedSupport/InstallInfo.plist"
 	pkgVer=$(plutil -extract "System Image Info.version" raw -o - "$instInfo" 2>/dev/null)
 	if [ -n "$expectedVer" ] && [ -n "$pkgVer" ] && \
@@ -1196,10 +1185,10 @@ add_installer_from_pkg () {
 # ------------------------------------------------------------------------------
 add_mas_createinstallmedia_mav () {
 
-	# Sierra (10.12) has a known forkbomb issue on all hosts: CFBundleShortVersionString
-	# mismatch causes createinstallmedia to spawn runaway child instances (EAGAIN /
-	# error 35). Fixed by patching Info.plist to match the version the binary expects
-	# before running. Darwin 16 = macOS Sierra 10.12; build strings always start with "16".
+	# Sierra (10.12) forkbombs on all hosts: a CFBundleShortVersionString
+	# mismatch makes createinstallmedia spawn runaway child instances (EAGAIN /
+	# error 35). add_mas_createinstallmedia_impl patches Info.plist to match.
+	# Darwin 16 = Sierra, so its build strings start with "16".
 	local installerBuild="$2"
 	[ -z "$installerBuild" ] && installerBuild=$(read_installer_build "$1")
 	local isSierra=0
@@ -1211,11 +1200,9 @@ add_mas_createinstallmedia_mav () {
 	# Store and must be sourced from a flat installer package. If the app is
 	# not already in /Applications, offer pkg extraction via
 	# add_installer_from_pkg. Apple never published a package for Mavericks
-	# (10.9), so its note sets expectations: a package in Apple's flat layout
-	# works, but the user supplies it from their own archive. Sierra on a
-	# macOS 26 or later host has the additional constraint that its JavaScript
-	# distribution scripts are rejected by the host's pkg engine - surfaced so
-	# the user understands why the MAS cannot be used. Both notes pause for input,
+	# (10.9), so its note tells the user to supply their own. Sierra on a
+	# macOS 26 or later host can't use the MAS because the host's pkg engine
+	# rejects its JavaScript distribution scripts. Both notes pause for input,
 	# since the pkg prompt clears the screen when it draws its own header.
 	local _pkgExtracted=0
 	if [ ! -d "$1" ]; then
@@ -1330,8 +1317,8 @@ download_curl_interruptible () {
 #                   add_installer_from_pkg to assemble the installer app
 #   catalog_single - single InstallAssistant.pkg (11+); installer to /
 #   catalog_hfs    - packages (10.13-10.15); pkgutil expand → app + InstallESD.dmg
-# After the pipeline finishes, removing the assembled/installed app is offered
-# rather than assumed. Returns 0 if the image was added, 1 otherwise.
+#
+# Returns 0 if the image was added, 1 otherwise.
 #
 # $1 - conf key (e.g. "inst1015i")
 # $2 - source type: "cdn_dmg" | "catalog_single" | "catalog_hfs"
@@ -1469,8 +1456,9 @@ download_fetch_and_process () {
 		#                              10.15 - without it, real hardware panics with
 		#                              "root image authentication failed (err = 2)" (ENOENT)
 		#   AppleDiagnostics.chunklist -> same requirement, for AppleDiagnostics.dmg
-		# We leave InstallInfo.plist untouched (it already has the System Image Info /
-		# Payload Image Info keys that createinstallmedia validates).
+		# InstallInfo.plist already has the System Image Info / Payload Image Info
+		# keys that createinstallmedia validates, so it only gets one key added
+		# (ProductBuildVersion, below).
 		disp_print_header
 		echo "Downloading $dlLabel..."
 		echo "Press Control-C to cancel."
@@ -1482,12 +1470,7 @@ download_fetch_and_process () {
 		for _hfsURL in "${_hfsURLs[@]}"; do
 			[ -z "$_hfsURL" ] && continue
 			_hfsFname="${_hfsURL##*/}"
-			# Only download the files we need for assembly; skip everything else.
-			# BaseSystem.dmg and AppleDiagnostics.dmg are raw files (not pkgs) that
-			# must be present in SharedSupport for createinstallmedia and build
-			# number detection to work. Their .chunklist siblings must be present
-			# too, for the kernel's root-dmg authentication at boot (see the
-			# catalog_hfs comment above).
+			# Only download the files listed in the catalog_hfs comment above.
 			case "$_hfsFname" in
 				InstallAssistantAuto.pkg|InstallESDDmg.pkg|\
 				BaseSystem.dmg|AppleDiagnostics.dmg|\
@@ -1582,10 +1565,9 @@ download_fetch_and_process () {
 		fi
 		rm -rf "$_esdStage" "$tmpDir/InstallESDDmg.pkg"
 
-		# BaseSystem.dmg and AppleDiagnostics.dmg are raw CDN files (not packages)
-		# that createinstallmedia reads from SharedSupport. Their .chunklist
-		# siblings must land in the same directory, under the same base name,
-		# for the kernel to find them during root-dmg authentication at boot.
+		# createinstallmedia reads BaseSystem.dmg and AppleDiagnostics.dmg from
+		# SharedSupport. Each .chunklist has to sit beside its .dmg, under the
+		# same base name, for the kernel's root-dmg authentication at boot.
 		for _dmg in BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist; do
 			[ -f "$tmpDir/$_dmg" ] && mv "$tmpDir/$_dmg" "$_sharedSupport/$_dmg"
 		done
@@ -1680,16 +1662,11 @@ catalog_fetch_vars () {
 import subprocess, gzip, plistlib, sys, re, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Shared catalog walker for startup_sync_versions and download_installer_menu.
-# MAKEDRIVE_CATALOG_MODE selects the output, both shell-sourceable variable
-# assignments printed to stdout:
-#   sync - MACOS_DL_* version/build pairs per macOS generation
-#   menu - the same pairs, plus MAKEDRIVE_DLCAT_* download rows (key, build,
-#          source type, URLs, size)
+# Shared catalog walker. MAKEDRIVE_CATALOG_MODE is "sync" or "menu": the
+# catalog_fetch_vars banner above says what each one prints.
 MODE = os.environ.get("MAKEDRIVE_CATALOG_MODE", "sync")
 
-# Fetch a URL with curl (follows redirects, fails on HTTP errors). Returns the
-# raw response bytes, or None on any network/process failure.
+# Fetch a URL with curl. Returns the raw bytes, or None on any failure.
 def fetch(url, timeout=30):
     try:
         r = subprocess.run(
@@ -1700,10 +1677,8 @@ def fetch(url, timeout=30):
     except Exception:
         return None
 
-# Catalog index URLs come from makedrive.conf (catalogURLs), passed in via the
-# MAKEDRIVE_CATALOG_URLS environment variable, one URL per line. MENU_ORDER
-# carries addMenuOrder the same way for mapping versions to conf keys (menu
-# mode only).
+# Catalog index URLs come from catalogURLs in makedrive.conf. MENU_ORDER is
+# addMenuOrder, for mapping versions to conf keys (menu mode only).
 CATALOG_URLS = [u for u in os.environ.get("MAKEDRIVE_CATALOG_URLS", "").splitlines() if u]
 MENU_ORDER   = [k for k in os.environ.get("MAKEDRIVE_MENU_ORDER",   "").splitlines() if k]
 
@@ -1759,9 +1734,8 @@ def parse_ver(v):
 def parse_build(b):
     # Apple build strings look like "19H15" or "17F66a": digits, a revision
     # letter, a point number, and an optional hotfix suffix letter. Plain
-    # string comparison is wrong here ("19H15" < "19H4" lexically, since
-    # '1' < '4') - parse into a tuple so the point number compares
-    # numerically.
+    # string comparison is wrong here ("19H15" < "19H4" lexically), so parse
+    # into a tuple.
     m = re.match(r'^(\d+)([A-Za-z]+)(\d+)([a-zA-Z]*)$', str(b).strip())
     if not m:
         return (0, '', 0, '')
@@ -1807,8 +1781,7 @@ SAFE_URL     = re.compile(r'^https://[A-Za-z0-9._~:/%+=-]+$')
 final = sorted(newest.values(), key=lambda e: parse_ver(e["version"]), reverse=True)
 
 # The version/build pairs are emitted in both modes. The launch sync reads
-# them alone; the download menu uses them to bring the conf up to the catalog
-# before it lists the builds it is about to download.
+# them alone; the download menu uses them to bring the conf up to the catalog.
 pairs = [e for e in final
          if SAFE_VERSION.match(e["version"]) and SAFE_BUILD.match(e["build"])]
 print("MACOS_DL_COUNT=" + str(len(pairs)))
@@ -1870,11 +1843,9 @@ for entry in final:
         rows.append((key, entry["build"], "catalog_single", url, size))
     elif p[0] == 10 and p[1] >= 13:
         # 10.13-10.15: pass the distribution URL plus every package URL;
-        # download_fetch_and_process's catalog_hfs case is the actual filter
-        # deciding which specific files get downloaded and assembled with
-        # pkgutil. Chunklist URLs are kept here (not filtered) because
-        # BaseSystem.chunklist is required for 10.15 to boot. The size counts
-        # only the files that case will actually download.
+        # download_fetch_and_process's catalog_hfs case decides which files get
+        # downloaded and assembled with pkgutil. Chunklist URLs are kept (not
+        # filtered) because BaseSystem.chunklist is required for 10.15 to boot.
         all_pkg_urls = [pkg.get("URL", "") for pkg in entry["packages"] if pkg.get("URL", "")]
         dist_url = entry["dist_url"]
         total_size = sum(pkg.get("Size", 0) for pkg in entry["packages"]
@@ -1928,8 +1899,7 @@ download_installer_menu () {
 		return 1
 	}
 
-	# Same catalog walk as startup_sync_versions; menu mode also captures
-	# download URLs and sizes for the latest installer per major version.
+	# Same catalog walk as startup_sync_versions, plus download URLs and sizes.
 	catalog_fetch_vars menu > "$syncFile" 2>/dev/null
 
 	if ! grep -q "^MAKEDRIVE_DLCAT_COUNT=" "$syncFile" 2>/dev/null; then
@@ -2312,16 +2282,14 @@ conf_build_image_paths () {
 
 # ------------------------------------------------------------------------------
 # conf_derive_menus
-# Builds the image lists from makedrive.conf instead of keeping them by hand,
-# so an image block can be added or removed there without also editing a list.
+# Builds the image lists from makedrive.conf, so an image block can be added or
+# removed there without also editing a list.
 #
-# addMenuOrder lists image keys oldest to newest, derived from every MenuLabel
-# key in the conf (reversed, since new blocks are added at the top of that
-# file). Installer and diagnostic key families alike are discovered this way.
-# addMenuInstallers and addMenuDiagnostics split it for the add image
-# sub-menus and the quick deploy chooser: installer keys carry the inst
-# prefix, every other key family is a diagnostic. imageFilePaths follows from
-# them through conf_build_image_paths.
+# addMenuOrder lists image keys oldest to newest, from every MenuLabel key in
+# the conf (reversed, since new blocks go at the top). addMenuInstallers and
+# addMenuDiagnostics split it for the add image sub-menus and the quick deploy
+# chooser: keys with the inst prefix are installers, every other family is a
+# diagnostic. imageFilePaths follows through conf_build_image_paths.
 #
 # $1 - Path to the conf file the keys are read from
 # ------------------------------------------------------------------------------
@@ -2351,10 +2319,9 @@ conf_derive_menus () {
 
 # ------------------------------------------------------------------------------
 # conf_bt_detail_size
-# Sums the VolSize of every non-dataDrive key given and prints the total
-# rounded up to the nearest 10 (as a bare number, the GB is added by the
-# caller). Uses VolSize, not NewImageVolSize, since that is what lands on the
-# target disk.
+# Prints the total VolSize of the given keys (dataDrive excluded), rounded up
+# to the nearest 10, as a bare number; the caller adds the GB. It sums VolSize,
+# not NewImageVolSize, because that is what lands on the target disk.
 #
 # $@ - Image keys of one build type's volume list
 # ------------------------------------------------------------------------------
@@ -2384,15 +2351,14 @@ conf_bt_detail_size () {
 # conf_derive_build_types
 # Builds the build type registry from makedrive.conf.
 #
-# buildTypeNums (the valid type numbers, in menu display order) comes from
-# every buildTypeXX_label key, sorted numerically ascending, so a build type
-# can be added, removed, or renumbered there without also editing a list.
+# buildTypeNums (the valid type numbers, in menu order) comes from every
+# buildTypeXX_label key, sorted ascending, so a type can be added, removed or
+# renumbered there without also editing a list.
 #
-# buildTypeXX_detail is computed for any type in buildTypeNums that does not
-# define one, from the VolSize of its volumes, so it stays correct whatever
-# number a type is given or which keys it lists. A type that already defines
-# a detail in the conf (DataDrive Only, whose "0G = use remaining space"
-# volume can't be summed) is left alone.
+# buildTypeXX_detail is computed from the volumes' VolSize for any type that
+# doesn't define one, so it stays right whatever the type's number. A detail
+# defined in the conf is left alone (DataDrive Only, whose "0G = use remaining
+# space" volume can't be summed).
 #
 # $1 - Path to the conf file the labels are read from
 # ------------------------------------------------------------------------------
@@ -2523,9 +2489,8 @@ download_sync_conf () {
 		# Update makedrive.conf using awk literal-string substitution.
 		# lsub() does a plain index()-based replace - no regex metacharacter
 		# risk from dots in version strings (e.g. "26.5.1").
-		# Output is staged to a temp file in the same directory, then
-		# renamed into place atomically so a partial write never corrupts
-		# the conf. The change count is printed to stdout and captured.
+		# Output is staged to a temp file in the same directory, then renamed
+		# into place atomically so a partial write never corrupts the conf.
 		local tmpConf
 		tmpConf=$(mktemp "${confPath}.XXXXXX") || continue  # can't stage safely; skip this update
 		# mktemp creates the staging file mode 600 owned by root (makedrive
@@ -2633,7 +2598,6 @@ startup_sync_versions () {
 			return 0
 		fi
 
-		# Fresh result: cache it for the two-hour window.
 		mkdir -p "$makedriveSupportDir"
 		cp "$syncVarsFile" "$cacheFile"
 	fi
@@ -2695,8 +2659,7 @@ build_ask_to_copy_datadrive () {
 			disp_read_choice okToCopyData
 		fi
 			
-		# If the input is none of the valid inputs, null the value and return to
-		# the prompt for input. Accounts for case of input.
+		# If the input isn't Y or N (either case), null the value and ask again.
 		case "$okToCopyData" in
 		
 		[YyNn] )
@@ -2739,9 +2702,8 @@ build_ask_to_run_again () {
 # ------------------------------------------------------------------------------
 # build_disks_behind_volume
 # Prints the whole-disk number(s) behind the mounted volume at $1, one per line:
-# its own whole disk and, on APFS, the physical disk under the synthesized
-# container. Erasing either one takes the volume with it, so both count.
-# Prints "unreadable" instead when diskutil has nothing to say about the volume.
+# its own disk and, on APFS, the physical disk under the container. Erasing
+# either takes the volume with it. Prints "unreadable" if diskutil can't say.
 # ------------------------------------------------------------------------------
 build_disks_behind_volume () {
 
@@ -2761,9 +2723,9 @@ build_disks_behind_volume () {
 # ------------------------------------------------------------------------------
 # build_disks_with_backup_volumes
 # Prints the whole-disk number(s), one per line, of every APFS container that
-# holds a volume with the Backup role, which is what macOS gives a volume that
-# Time Machine uses. The role is stored on the volume itself, so this still
-# sees a backup disk that is locked, unmounted, or not set up on this Mac.
+# holds a volume with the Backup role (what macOS gives a Time Machine volume).
+# The role lives on the volume, so this finds a backup disk that is locked,
+# unmounted, or not set up on this Mac.
 # ------------------------------------------------------------------------------
 build_disks_with_backup_volumes () {
 
@@ -2780,23 +2742,19 @@ build_disks_with_backup_volumes () {
 # ------------------------------------------------------------------------------
 # build_get_time_machine_disks
 # Sets $timeMachineDiskID to the whole-disk number(s) that hold a Time Machine
-# backup, with the 'disk' prefix stripped (e.g. "6 7" on APFS, for the physical
-# disk plus its container). build_choose_target_device refuses any of these as an
-# erase target. $timeMachineUnreadable is set to 1 when a backup is mounted
-# right now but diskutil couldn't say which disk it is on, which means the
-# check is blind to it.
+# backup, without the 'disk' prefix (e.g. "6 7" on APFS: the physical disk and
+# its container). build_choose_target_device refuses all of them.
+# $timeMachineUnreadable is 1 when a backup is mounted but diskutil couldn't say
+# which disk it is on, so the check can't see it.
 #
-# Read-only: it asks tmutil, mount and diskutil questions and looks for one
-# folder name, and changes nothing. No single signal sees every backup disk, so
-# it takes three:
+# Read-only: it only asks tmutil, mount and diskutil questions. No one signal
+# finds every backup disk, so it uses three:
 #   - a local backup destination this Mac has set up and mounted (tmutil)
 #   - an APFS volume with the Backup role, mounted or not, set up here or not
-#   - a mounted volume holding a Backups.backupdb folder, which is how an older
-#     HFS+ backup disk looks from outside
-# Only volumes on local disks are probed for the folder, because looking inside
-# a network share that has gone away can hang.
-# A backup disk that is HFS+, unmounted and not set up on this Mac shows none of
-# these, so the confirmation before an erase is still the last word on those.
+#   - a Backups.backupdb folder on a mounted volume (older HFS+ backup disks)
+# Only local disks are probed for the folder, since looking inside a network
+# share that has gone away can hang. An unmounted HFS+ backup disk shows none of
+# these; the erase confirmation is the last word there.
 # ------------------------------------------------------------------------------
 build_get_time_machine_disks () {
 
@@ -2830,9 +2788,9 @@ build_get_time_machine_disks () {
 
 # ------------------------------------------------------------------------------
 # build_disk_is_time_machine
-# Succeeds when whole disk number $1 holds a Time Machine backup. It looks again
-# every time instead of remembering: a disk can be attached, or swapped for
-# another that takes the same number, at any point after makedrive starts.
+# Succeeds when whole disk number $1 holds a Time Machine backup. Looks again
+# each time: a disk can be attached, or swapped for one with the same number,
+# after makedrive starts.
 # ------------------------------------------------------------------------------
 build_disk_is_time_machine () {
 
@@ -2844,9 +2802,8 @@ build_disk_is_time_machine () {
 
 # ------------------------------------------------------------------------------
 # build_eject_target_disk
-# Ejects disk $1 once its build is over, unless it turns out to hold a Time
-# Machine backup (the disk was swapped after it was chosen), which is left
-# exactly as it was found.
+# Ejects disk $1 after its build, unless it now holds a Time Machine backup (the
+# disk was swapped after it was chosen), which is left exactly as found.
 # ------------------------------------------------------------------------------
 build_eject_target_disk () {
 
@@ -2867,10 +2824,8 @@ build_eject_target_disk () {
 # ------------------------------------------------------------------------------
 build_choose_target_device () {
 
-	# As long as the $diskNum is empty, keep asking for input. Depending on the
-	# input, the checking function will null out the input to keep asking or
-	# route the user to the next input and verify it is the disk they want to
-	# build onto.
+	# Depending on the input, the checks below null out $diskNum to keep asking
+	# or move on to verifying it's the disk they want to build onto.
 	while [ "$diskNum" == "" ]; do
 
 		disp_print_header
@@ -2909,8 +2864,7 @@ build_choose_target_device () {
 		elif [ "$diskNum" = "X" ] || [ "$diskNum" = "x" ]; then
 			break
 
-		# If the disk number doesn't exist, kick it back and ask again.  This
-		# should handle any kind of spurious inputs you can encounter. Anything
+		# If the disk number doesn't exist, kick it back and ask again. Anything
 		# but digits is turned away too: a slice like 2s1 exists as a device,
 		# but would slip past the whole-disk checks below.
 		elif [[ "$diskNum" == *[!0-9]* ]] || [ ! -e "/dev/disk$diskNum" ]; then
@@ -2923,8 +2877,7 @@ build_choose_target_device () {
 			diskNum=""
 
 		# If the disk to image is a boot disk (bootDiskID may list more than one
-		# number on APFS), null the input to return you to the input prompt and
-		# present a warning not to do it again.
+		# number on APFS), warn and ask again.
 		elif [[ " $bootDiskID " == *" $diskNum "* ]]; then
 			disp_print_header
 			
@@ -2972,17 +2925,14 @@ build_choose_target_device () {
 
 # ------------------------------------------------------------------------------
 # build_clean_vol_folder
-# Checks to see if the /Volumes/DataDriveTempFolder exists, and if it does, it 
-# erases the folder since it shouldn't exist before building the disk.  This is 
-# a solution to the problem of drives getting disconnected while imaging (and 
-# having it cause the DataDrive partition to not copy data on subsequent disks.)
+# Erases /Volumes/DataDriveTempFolder if it exists, because it shouldn't exist
+# before a build. This is the fix for drives getting disconnected while imaging,
+# which makes the DataDrive partition not copy data on subsequent disks.
 # ------------------------------------------------------------------------------
 build_clean_vol_folder () {
 
 	disp_print_header
 	
-	# Check to see if the folder is persisting for some reason. If it is, delete
-	# it to prevent issues with creating the new DataDrive.
 	if [ -n "$dataDriveStartName" ] && [ -e "/Volumes/$dataDriveStartName" ]; then
 		rm -rf "/Volumes/$dataDriveStartName"
 	fi
@@ -3110,9 +3060,6 @@ deploy_restore_and_configure () {
 			return 2
 		fi
 		echo ""
-		# INST-A and ASD-EFI images restore with their source volume name,
-		# which the rename below moves to finalName. GENERIC images already
-		# restore as finalName.
 		case "$deployType" in
 		INST-A | ASD-EFI ) renameSource="$volName" ;;
 		esac
@@ -3151,13 +3098,11 @@ deploy_restore_and_configure () {
 	# (its own boot.efi, kernelcache, Boot.plist) that Apple's
 	# createinstallmedia blesses as the actual active boot target instead of
 	# CoreServices (confirmed via `bless --info`: "Blessed System Folder is
-	# .../.IABootFiles"). Blessing CoreServices above does not change that -
-	# the firmware reads the label from whichever folder is actually blessed,
-	# and for these volumes that is .IABootFiles, still carrying Apple's
-	# original (not $finalName) label. Re-blessing it directly here makes
-	# bless regenerate its label using $finalName, the same way it already
-	# does correctly for CoreServices on volumes that lack this folder. We
-	# never create this folder ourselves - only re-bless it if already present.
+	# .../.IABootFiles"). Blessing CoreServices above does not change that:
+	# the firmware reads the label from whichever folder is blessed, here
+	# .IABootFiles, which still carries Apple's original (not $finalName) label.
+	# Re-blessing it makes bless regenerate the label from $finalName. We never
+	# create it, only re-bless it if present.
 	local iaBootFiles="/Volumes/$finalName/.IABootFiles"
 	if [ -d "$iaBootFiles" ]; then
 		bless -folder "$iaBootFiles" -label "$finalName" 2>/dev/null
@@ -3171,13 +3116,11 @@ deploy_restore_and_configure () {
 		chmod 755 "/Volumes/$finalName/datefix"
 	fi
 
-	# Disable Spotlight on target volume
 	echo "Disabling Spotlight on target volume."
 	touch "/Volumes/$finalName/.metadata_never_index"
 	sleep "$spotlightSleepInSeconds"
 	mdutil -i off "/Volumes/$finalName"
 
-	# Unmount the target volume
 	echo "Unmounting volume now..."
 	diskutil unmount "/Volumes/$finalName"
 
@@ -3207,7 +3150,6 @@ build_deploy_volume () {
 
 			disp_print_header
 
-			# If the user chose to copy the contents of DataDrive
 			if [ "$okToCopyData" = "Y" ] || [ "$okToCopyData" = "y" ]; then
 
 				echo "Cloning contents of data partition now..."
@@ -3274,8 +3216,7 @@ build_deploy_volume () {
 # ------------------------------------------------------------------------------
 build_drives_start () {
 
-	# While the doDrive variable is set to Y, keep running through and asking to
-	# image another drive.  Once the answer is no, exit.
+	# While doDrive is Y, keep asking to image another drive.
 	while [ "$doDrive" == "Y" ] || [ "$doDrive" == "y" ]; do
 		build_menu_chooser
 
@@ -3305,7 +3246,6 @@ build_drives_start () {
 			break
 		fi		
 
-		# Run the appropriate function for each drive type
 		build_clean_vol_folder
 		build_run_build_task
 		local buildTaskResult=$?
@@ -3336,9 +3276,8 @@ build_drives_start () {
 # ------------------------------------------------------------------------------
 # build_check_images_present
 # Confirms every image the chosen build type deploys is in restorekit before
-# a target disk is picked. The build partitions the disk first and restores
-# volumes in order, so a missing image would otherwise surface as a failed
-# restore on a drive that has already been erased.
+# a target disk is picked. The build partitions first, so a missing image
+# would otherwise fail a restore on a drive that's already erased.
 #
 # Uses global: diskType
 # Returns 0 if every image is present, 1 after listing the ones that are not.
@@ -3372,11 +3311,8 @@ build_check_images_present () {
 
 # ------------------------------------------------------------------------------
 # build_format_target_disk
-# Parameters passed to build_format_target_disk will allow the function to properly
-# partition the disk ID provided, using the partition map type provided, in the
-# named and sized structure provided. The function also provides the initial
-# spotlight deactivation to keep things calm prior to each volume itself being
-# restored or changed once formatted.
+# Partitions the disk ID provided, using the partition map type provided, in the
+# named and sized structure provided.
 #
 # $1 - Disk ID to be partitioned for use
 # $2 - Disk partition scheme type
@@ -3390,16 +3326,14 @@ build_format_target_disk () {
 	local numOfVolumes="${#volumesToMake[@]}"
 	local volumeCounter
 
-	# Whatever led here, a Time Machine backup is never partitioned. The disk
-	# picker already refuses one; this looks again because a disk can be
-	# swapped for another that takes the same number after it was confirmed.
+	# The picker already refuses a Time Machine backup; look again in case a
+	# different disk took the same number after it was confirmed.
 	if build_disk_is_time_machine "$1"; then
 		echo ""
 		echo "disk$1 holds a Time Machine backup, and makedrive never erases one."
 		return 1
 	fi
 
-	# Build the partition argument string by stepping through each volume entry.
 	# Each entry contributes three fields: filesystem type, start name, and size.
 	for (( volumeCounter = 0 ; volumeCounter < ${#volumesToMake[@]} ; volumeCounter++ )); do
 		
@@ -3411,7 +3345,6 @@ build_format_target_disk () {
 	# when attempting to partition the physical device with any mounted containers
 	diskutil unmountDisk force "disk$1"
 	
-	# Partition the disk using the passed info and constructed string.
 	# eval is required to expand the $varName references embedded in partitionString.
 	# The values come exclusively from makedrive.conf, which is controlled by the
 	# admin who runs the script; this is the intended trust boundary.
@@ -3519,10 +3452,9 @@ quick_deploy_menu_choose_image () {
 	local deployableImages=()
 	local menuLabels=()
 
-	# Build arrays of all configured installer images and matching display
-	# labels once. Diagnostic images are excluded: a quick deploy target
-	# holds one volume, and diagnostic sets are only useful as the
-	# multi-volume pairs a full diagnostics build lays down.
+	# Diagnostic images are excluded: a quick deploy target holds one volume, and
+	# diagnostic sets are only useful as the multi-volume pairs a full
+	# diagnostics build lays down.
 	for key in "${addMenuInstallers[@]}"; do
 		dispNameVar="${key}DispName"
 		menuLabels+=( "$(printf "%2d. %s" "$menuIndex" "${!dispNameVar}")" )
@@ -3603,7 +3535,6 @@ quick_deploy_format_disk () {
 	echo "Preparing disk$diskNum for restoration..."
 	echo ""
 
-	# Unmount all volumes on the disk
 	diskutil unmountDisk force "disk$diskNum"
 
 	if ! diskutil partitionDisk "disk$diskNum" 1 "$scheme" "$volType" "$volumeName" 0; then
@@ -3712,7 +3643,7 @@ quick_deploy_start () {
 # check_file_presence
 # Builds per-category lists of configured images missing from restorekit into
 # the missingInstallersList and missingDiagnosticsList globals, with matching
-# counts. The Main Menu prints a one-line notice when anything is missing, the
+# counts. The Main Menu prints a short notice when anything is missing, the
 # image type chooser tags each category with its count, and each image list
 # prints its own full list through disp_print_missing_images.
 # ------------------------------------------------------------------------------
@@ -3827,8 +3758,7 @@ dmgtool_compress_dmg () {
 
 		else
 
-			# Rename original aside, move compressed into place, then remove original.
-			# Staging the rename means the original is recoverable if the second mv fails.
+			# Original goes aside first so a failed second mv can put it back.
 			if ! mv "$1" "$1.old.dmg"; then
 				rm -f "$1.new.dmg"
 				return 1
@@ -4175,7 +4105,7 @@ notify_pushover_delete_credentials () {
 # ------------------------------------------------------------------------------
 # notify_pushover_remove
 # Confirms intent then permanently removes Pushover credentials from the
-# user's login keychain. makedrive will no longer send notifications after removal.
+# user's login keychain.
 # ------------------------------------------------------------------------------
 notify_pushover_remove () {
 
@@ -4529,9 +4459,8 @@ postflight_cleanup () {
 # ------------------------------------------------------------------------------
 # preflight_check_for_restorekit
 # Checks to see if the restorekit folder is alongside of the makedrive script, 
-# typically on the desktop but not necessarily on a desktop folder. Uses the 
-# current location of the script as the basis for its search. Note that this
-# doesn't check the contents of the folder.
+# typically on the desktop but not necessarily on a desktop folder. Note that
+# this doesn't check the contents of the folder.
 # ------------------------------------------------------------------------------
 preflight_check_for_restorekit () {
 
@@ -4593,9 +4522,7 @@ preflight_check_instance () {
 
 		# Match root-owned bash processes running makedrive, excluding this
 		# process itself so the check also works when makedrive is already
-		# root here - launched directly with sudo rather than through the
-		# self-elevation flow, whose pre-elevation parent (exec'd away since)
-		# used to be the only place this check could run.
+		# root here (launched directly with sudo).
 		otherPID=$(pgrep -U 0 -f "bash .*makedrive" 2>/dev/null | grep -vx "$$" | head -n 1)
 
 		if [ -n "$otherPID" ]; then
@@ -4642,9 +4569,9 @@ preflight_check_instance () {
 
 # ------------------------------------------------------------------------------
 # preflight_check_root
-# Checks to see if the script is running as root. If not, it re-runs the script
-# as root to ensure proper execution of the script.  Also, it presents the
-# introduction and warning to users who may not be familiar with the script.
+# Checks to see if the script is running as root. If not, it presents the
+# introduction and warning to users who may not be familiar with the script,
+# then re-runs it as root.
 # ------------------------------------------------------------------------------
 preflight_check_root () {
 		
@@ -4710,7 +4637,6 @@ migrate_conf_file () {
 	fi
 
 	# Clean up old archives, keeping only the 10 most recent
-	# Count existing archives by sorting files and removing excess ones
 	archiveCount=$(find "$archiveDir" -name "makedrive.conf_archived_*" -type f 2>/dev/null | wc -l)
 
 	if [ "$archiveCount" -gt 10 ]; then
@@ -4783,14 +4709,13 @@ migrate_pushover_credentials () {
 # ------------------------------------------------------------------------------
 # preflight_check_conf
 # Validates the image and build type definitions in makedrive.conf before any
-# menu is offered. Every image key referenced by the add menu or a build type
-# must define the variables the partition and deploy code dereference, and
-# the fields that build_format_target_disk eval-expands unquoted into the
-# diskutil partition string (VolType, StartName, VolSize, scheme) must not
-# contain whitespace - whitespace there silently misaligns the partition
-# argument triplets. Without this check a conf typo surfaces only after the
-# target disk has already been partitioned; this turns a destroyed drive
-# into an error message at launch.
+# menu is offered: every image key must have the variables the partition and
+# deploy code dereference, and the fields build_format_target_disk eval-expands
+# unquoted into the diskutil partition string (VolType, StartName, VolSize,
+# scheme) must not contain whitespace, which silently misaligns the partition
+# argument triplets. A conf typo would otherwise surface only after the target
+# disk is partitioned; this turns a destroyed drive into an error message at
+# launch.
 # ------------------------------------------------------------------------------
 preflight_check_conf () {
 
@@ -5007,14 +4932,12 @@ preflight_get_boot_device () {
 
     disp_print_header
 
-    # Determine every whole-disk number that backs the running system so the
-    # build menu can refuse to erase it. The mechanism differs per platform.
     if [ "$(uname -m)" = "arm64" ]; then
 
-        # Apple Silicon: derive the boot disk(s) from the root volume. An APFS
-        # system volume lives on a synthesized container (Part of Whole) that is
-        # itself backed by a physical store (APFS Physical Store) - erasing
-        # either would destroy the boot OS, so both numbers are protected.
+        # Apple Silicon: an APFS system volume lives on a synthesized container
+        # (Part of Whole) that is itself backed by a physical store (APFS
+        # Physical Store). Erasing either would destroy the boot OS, so both
+        # numbers are protected.
         local bootInfo parentWhole physStore diskNumCandidate
         bootInfo=$(diskutil info / 2>/dev/null)
         parentWhole=$(echo "$bootInfo" | awk -F': *' '/Part of Whole/ {print $2}' | tr -d ' ')
@@ -5077,11 +5000,10 @@ process_check_dmgs () {
 
 	totalImages="${#imageFilePaths[@]}"
 
-	# dmgtool_compress_dmg and dmgtool_scan_dmg each start by checking the
-	# image and return immediately when there is nothing to do, so every
-	# present image is handed straight to both - no separate pre-scan pass,
-	# and one hdiutil imageinfo per check instead of two. Compress runs
-	# before scan for each image because conversion invalidates scan data.
+	# dmgtool_compress_dmg and dmgtool_scan_dmg each check the image first and
+	# return immediately when there is nothing to do, so every present image
+	# goes straight to both: one hdiutil imageinfo per check, no pre-scan pass.
+	# Compress runs before scan because conversion invalidates scan data.
 	for (( imageProcessCounter = 0 ; imageProcessCounter < totalImages ; imageProcessCounter++ )); do
 
 		[ -e "${imageFilePaths[$imageProcessCounter]}" ] || continue
@@ -5149,10 +5071,9 @@ if [ -n "${MAKEDRIVE_SOURCE_ONLY:-}" ]; then
 	return 0 2>/dev/null || exit 0
 fi
 
-# If the script has to be killed, clean up the temp/lock files. SIGHUP is what
-# arrives when the Terminal window is closed; untrapped it ends the script on
-# the spot and leaves the lockfile and scratch directory (which can hold a
-# multi-gigabyte installer image) behind.
+# SIGHUP is what arrives when the Terminal window is closed; untrapped it ends
+# the script on the spot and leaves the lockfile and scratch directory (which
+# can hold a multi-gigabyte installer image) behind.
 
 trap postflight_cleanup SIGINT SIGTERM SIGHUP
 

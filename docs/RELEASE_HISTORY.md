@@ -8,22 +8,16 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 ### Build 203 - 2026-07-18
 
 - **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
-  Server Diagnostics, and the AST Blank Board Serializer are back as
-  configuration-defined images with a dedicated Apple Partition Map build
-  type covering Intel Macs through the 2015 model years. ASD images are
-  added and restored like any other image, AXD EFI volumes are populated
-  by Apple's own installer package (accepting its long-expired signing
-  certificate), and the serializer volume is cloned in place. Diagnostic
-  images are excluded from the USB and SD card restore path, which stays
-  installer only.
-- **Version sync preserves conf ownership:** the automatic version updater
-  stages its rewrite through a temporary file, which left makedrive.conf
-  owned by root and unreadable to the user account after an update, and
-  the next launch failed with misleading missing-variable errors. The
-  staged copy now carries the conf's own ownership and permissions, and a
-  launch that finds a conf it can't read goes straight to the
-  administrator prompt, where the conf is read and repaired with no
-  manual step.
+  Server Diagnostics (AXD), and the AST Blank Board Serializer are back as
+  images defined in makedrive.conf, with their own Apple Partition Map
+  build type for Intel Macs through the 2015 model years. makedrive
+  installs the AXD packages despite their long-expired signing certificate.
+  USB and SD card restores stay installer only.
+- **Version sync preserves conf ownership:** an automatic version update
+  could leave makedrive.conf owned by root and unreadable, so the next
+  launch failed with misleading missing-variable errors. The conf now keeps
+  its ownership and permissions, and a launch that finds an unreadable conf
+  goes straight to the administrator prompt and repairs it.
 - **Mavericks package assembly:** a 10.9 installer flat package in Apple's
   layout is now accepted through the same package assembly, version check,
   and build verification as 10.10 through 10.12 when the installer app is
@@ -34,34 +28,29 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   the Apple Silicon & Intel Installers build type. Configured Apple
   Silicon only, matching Apple's Rosetta 2 phase-out schedule.
 - **Mounted-source deploys hardened:** the AXD package install and the
-  serializer clone confirm the source image actually mounted before using
-  it, and force-detach the source when finished or on failure, so an image
-  that attaches without mounting produces a clean error instead of acting
-  on an empty path.
+  serializer clone now confirm the source image really mounted, and always
+  detach it afterwards. An image that attaches without mounting gives a
+  clean error instead of acting on an empty path.
 - **Add image menu reorganized:** Main Menu option 1 now opens a chooser
-  split between macOS installers and diagnostic images. The chooser marks
-  each list that has missing images with a count, each list shows exactly
-  which of its files are missing, and the Main Menu shows a one-line
-  notice instead of the complete list.
+  for macOS installers or diagnostic images. Lists with missing images are
+  marked with a count, each list names its missing files, and the Main Menu
+  shows a short notice instead of the full list.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.
-- **Installer apps are no longer removed silently:** once an add has
-  finished, makedrive shows where the installer app it downloaded (option
-  2) or assembled from a package you supplied (option 1) is in
-  /Applications and asks whether to delete it. The prompt says what
-  keeping the app is good for, and anything typed during the download and
-  build is discarded first so it can't answer the question unseen.
-- **Download menu stays in step with Apple:** the download menu brings
-  makedrive.conf up to the live catalog before it lists installers,
-  including a re-issued build of an unchanged version, so each download is
-  labeled with and verified against the build Apple is actually serving.
-  If the conf can't be updated, makedrive says so before downloading
-  rather than after.
+- **Installer apps are no longer removed silently:** after an add finishes,
+  makedrive shows where the installer app it downloaded (option 2) or
+  assembled from your package (option 1) is in /Applications and asks
+  whether to delete it. Anything typed during the download and build is
+  discarded first, so a stray Return can't answer for you.
+- **Download menu stays in step with Apple:** it now brings makedrive.conf
+  up to Apple's live catalog before listing installers, re-issued builds
+  included, so each download is labeled with and verified against the build
+  Apple is serving. If the conf can't be updated, makedrive says so before
+  downloading, not after.
 - **Missing images stop a build before the disk is erased:** a full drive
-  build now confirms every image its build type needs is in restorekit
-  before a target disk is chosen. Previously the disk was partitioned
-  first and the build failed at the first missing image.
+  build now checks that every image its build type needs is in restorekit
+  before you choose a target disk.
 - **Compress and scan failures are reported:** adding an image no longer
   announces success when compression or the restore scan failed. It names
   the step that didn't finish and points to Main Menu option 3. A staging
@@ -76,28 +65,24 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   wrong item, the build type menu's R option no longer continues into disk
   selection with no type chosen, and a menu whose input has ended exits
   instead of redrawing indefinitely.
-- **Bigger installer images for macOS 26 and 27:** a finished macOS 26 image
-  turned out to be 97% full, with less than a gigabyte to spare. The working
-  image for 26 and 27 grows from 20 to 21 GB, and their partitions on the
-  drive from 22 to 23 GB. A full Apple Silicon and Intel drive now needs about
-  260 GB (it was 250).
-- **Interrupted downloads clean up after themselves:** installer downloads,
-  the working image, and the version check files now all live in one scratch
-  folder that cleanup always removes. Before, an interrupted download could
-  leave a folder of several gigabytes behind that cleanup never looked in.
-- **Time Machine backup disks are never erased:** the disk list used to
-  offer every attached disk, a backup disk included, and a wrong number
-  typed there would have erased it. makedrive now names the backup disks
-  under the list, refuses to erase one, and checks again right before it
-  formats anything, and it won't even eject one afterwards. It recognizes a
-  backup disk by what it's set up as (`tmutil`), by the APFS Backup volume
-  role, or by an older backup's `Backups.backupdb` folder, and it only ever
-  reads to find out. A disk number must also be digits now, so a slice like
-  `6s2` can't slip past the whole-disk checks.
-- **Closing the Terminal window cleans up:** a closed window used to end
-  makedrive on the spot, leaving its lock file and scratch space (which
-  can hold a multi-gigabyte installer image) behind. It now runs the same
-  cleanup as Control-C.
+- **Bigger installer images for macOS 26 and 27:** a finished macOS 26
+  image came out 97% full, so the working image for 26 and 27 grows from 20
+  to 21 GB and the drive partitions from 22 to 23 GB. A full Apple Silicon
+  and Intel drive now needs about 260 GB (it was 250).
+- **Interrupted runs clean up after themselves:** installer downloads, the
+  working image, and the version check files now share one scratch folder
+  that cleanup always removes, so an interrupted download no longer leaves
+  several gigabytes behind. Closing the Terminal window runs the same
+  cleanup as Control-C (it used to end makedrive on the spot and leave the
+  lock file and scratch folder behind), and temp volumes left mounted by an
+  interrupted build are detached. A failed volume rename during
+  createinstallmedia stops with a clear message instead of cascading.
+- **Time Machine backup disks are never erased:** makedrive now names the
+  backup disks under the disk list, refuses to erase one, checks again
+  right before formatting, and won't eject one afterwards. It finds them
+  read-only through `tmutil`, the APFS Backup volume role, or an older
+  backup's `Backups.backupdb` folder. Disk numbers must be digits now, so a
+  slice like `6s2` can't slip past.
 - **Configuration checked at launch:** makedrive.conf is now validated
   before any menu is offered. A missing variable, an unrecognized deploy
   type or AddFunc, or whitespace in a partition field is reported as an
@@ -115,13 +100,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   verifies the volume makedrive actually mounted, so an unrelated volume
   that shares the same name can no longer cause the right image to be
   rejected or vouch for a wrong one.
-- **Security hardening:** scratch images and package expansion moved into
-  a root-owned directory with an unpredictable name; Pushover credentials
-  no longer appear in process listings during keychain and network
-  operations; values from Apple's catalog and the cached version check are
-  validated before the script reads them; downloads are checked against
-  their expected sizes; and Pillow installation asks for consent instead
-  of running silently at launch.
+- **Security hardening:** scratch files now live in a root-owned directory
+  with an unpredictable name, and Pushover credentials stay out of process
+  listings. Apple catalog values and the cached version check are validated
+  before use, downloads are checked against their expected sizes, and
+  Pillow installation asks first instead of running silently at launch.
 - **Elevation and instance-check fixes:** a failed administrator
   authentication can no longer continue unprivileged, and the duplicate
   instance check now also works when makedrive is launched directly with
@@ -137,10 +120,6 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   one, and duplicated re-signing, image-attach, cleanup, compress/scan,
   and restore rename logic was unified, removing several hundred lines
   with no behavior change.
-- **Interrupted runs clean up properly:** temp volumes left mounted by an
-  interrupted build are detached during cleanup, and a failed volume
-  rename during createinstallmedia stops the process with a clear message
-  instead of cascading.
 - **makedrive.conf reorganized:** the sections edited routinely (build
   types, then installer image definitions, newest first) now lead the
   file, with the frozen diagnostic definitions and the static datefix
