@@ -1,7 +1,7 @@
 # makedrive User Guide
 
 **Version:** Build 203  
-**Updated:** 2026-07-18 
+**Updated:** 2026-11-03  
 **Author:** Ian Williams  
 **Contact:** [ian@themacgenie.com](mailto:ian@themacgenie.com)  
 **Project:** [https://makedrive.com](https://makedrive.com)
