@@ -252,9 +252,12 @@ then lists every installer makedrive knows how to add:
 ```
 Choose the installer you'd like to add to the restorekit folder:
 
- 1. 10.3.7 PPC Install                   12. 26.x App Store Install
- 2. 10.4.7 PPC Install                   13. 27.x App Store Install
+ 1. 10.3.7 PPC Install          12. 10.13.6 App Store Install
+ 2. 10.4.7 PPC Install          13. 10.14.6 App Store Install
  ...
+ 9. 10.10.5 App Store Install   20. 26.x App Store Install
+10. 10.11.6 App Store Install   21. 27.x App Store Install
+11. 10.12.6 App Store Install
  R. Return to the image type menu
  X. Exit Image Installer
 ```
@@ -351,8 +354,8 @@ Choose a macOS installer to download and add to restorekit:
 
   10.9 Mavericks is not available from Apple - add it manually via option 1.
 
-  1. 10.15.7 App Store Install                    9.8 GB
-  2. 26.x App Store Install                        14.2 GB
+  1. 27.x App Store Install                        16.6 GB
+  2. 26.x App Store Install                        17.1 GB
   ...
 
   X. Return to Main Menu
