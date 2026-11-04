@@ -46,6 +46,14 @@ _makedrive_userhome=$(eval echo "~${SUDO_USER:-$USER}")
 makedriveSupportDir="${_makedrive_userhome}/Library/Application Support/makedrive"
 makedriveSupportConf="${makedriveSupportDir}/makedrive.conf"
 makedrivePushoverKeychain="${_makedrive_userhome}/Library/Keychains/login.keychain-db"
+# Pushover credentials sit in the login keychain as two items under one account.
+# Anyone who already saved them is found by these exact names, so they're spelled
+# only here: a name changed in some functions and not others makes notifications
+# stop with no message.
+makedrivePushoverAccount="makedrive"
+makedrivePushoverServicePrefix="makedrive-pushover"
+makedrivePushoverUserKeyService="${makedrivePushoverServicePrefix}-userkey"
+makedrivePushoverAppTokenService="${makedrivePushoverServicePrefix}-apptoken"
 unset _makedrive_userhome
 
 # Image definitions, imageFilePaths, and build type configurations are
@@ -4071,16 +4079,16 @@ main_menu () {
 # ------------------------------------------------------------------------------
 notify_pushover_read_userkey () {
 	security find-generic-password \
-		-s "makedrive-pushover-userkey" \
-		-a "makedrive" \
+		-s "$makedrivePushoverUserKeyService" \
+		-a "$makedrivePushoverAccount" \
 		-w \
 		"$makedrivePushoverKeychain" 2>/dev/null
 }
 
 notify_pushover_read_apptoken () {
 	security find-generic-password \
-		-s "makedrive-pushover-apptoken" \
-		-a "makedrive" \
+		-s "$makedrivePushoverAppTokenService" \
+		-a "$makedrivePushoverAccount" \
 		-w \
 		"$makedrivePushoverKeychain" 2>/dev/null
 }
@@ -4092,12 +4100,12 @@ notify_pushover_read_apptoken () {
 # ------------------------------------------------------------------------------
 notify_pushover_delete_credentials () {
 	security delete-generic-password \
-		-s "makedrive-pushover-userkey" \
-		-a "makedrive" \
+		-s "$makedrivePushoverUserKeyService" \
+		-a "$makedrivePushoverAccount" \
 		"$makedrivePushoverKeychain" >/dev/null 2>&1
 	security delete-generic-password \
-		-s "makedrive-pushover-apptoken" \
-		-a "makedrive" \
+		-s "$makedrivePushoverAppTokenService" \
+		-a "$makedrivePushoverAccount" \
 		"$makedrivePushoverKeychain" >/dev/null 2>&1
 }
 
@@ -4180,7 +4188,7 @@ makedrive_uninstall () {
 		echo "  Removed $makedriveSupportDir"
 	fi
 
-	if security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+	if security find-generic-password -s "$makedrivePushoverUserKeyService" -a "$makedrivePushoverAccount" \
 			-w "$makedrivePushoverKeychain" >/dev/null 2>&1; then
 		notify_pushover_delete_credentials
 		echo "  Pushover credentials removed from login keychain."
@@ -4303,13 +4311,13 @@ notify_pushover_setup () {
 				# command failures in its exit status, so each write is
 				# verified by reading the credential back.
 				security -i <<-SECEOF
-					add-generic-password -U -s makedrive-pushover-userkey -a makedrive -w ${userKey} "${makedrivePushoverKeychain}"
+					add-generic-password -U -s ${makedrivePushoverUserKeyService} -a ${makedrivePushoverAccount} -w ${userKey} "${makedrivePushoverKeychain}"
 				SECEOF
 				saveUserKeyResult=1
 				[ "$(notify_pushover_read_userkey)" = "$userKey" ] && saveUserKeyResult=0
 
 				security -i <<-SECEOF
-					add-generic-password -U -s makedrive-pushover-apptoken -a makedrive -w ${appToken} "${makedrivePushoverKeychain}"
+					add-generic-password -U -s ${makedrivePushoverAppTokenService} -a ${makedrivePushoverAccount} -w ${appToken} "${makedrivePushoverKeychain}"
 				SECEOF
 				saveAppTokenResult=1
 				[ "$(notify_pushover_read_apptoken)" = "$appToken" ] && saveAppTokenResult=0
@@ -4320,7 +4328,7 @@ notify_pushover_setup () {
 					echo "Pushover credentials saved to your login keychain."
 					echo ""
 					echo "To verify or remove them, open Keychain Access, select your login"
-					echo "keychain, and search for 'makedrive-pushover'."
+					echo "keychain, and search for '${makedrivePushoverServicePrefix}'."
 					echo ""
 					printf "Would you like to send a test notification now? Y/N: "
 					read -r testConfirm
@@ -4663,17 +4671,17 @@ migrate_pushover_credentials () {
 	local sysKeychain="/Library/Keychains/System.keychain"
 
 	# Nothing to migrate if System Keychain has no makedrive credentials
-	security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+	security find-generic-password -s "$makedrivePushoverUserKeyService" -a "$makedrivePushoverAccount" \
 		-w "$sysKeychain" >/dev/null 2>&1 || return 0
 
 	# Already migrated - don't overwrite existing login keychain credentials
-	security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+	security find-generic-password -s "$makedrivePushoverUserKeyService" -a "$makedrivePushoverAccount" \
 		-w "$makedrivePushoverKeychain" >/dev/null 2>&1 && return 0
 
 	local oldUserKey oldAppToken
-	oldUserKey=$(security find-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+	oldUserKey=$(security find-generic-password -s "$makedrivePushoverUserKeyService" -a "$makedrivePushoverAccount" \
 		-w "$sysKeychain" 2>/dev/null)
-	oldAppToken=$(security find-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+	oldAppToken=$(security find-generic-password -s "$makedrivePushoverAppTokenService" -a "$makedrivePushoverAccount" \
 		-w "$sysKeychain" 2>/dev/null)
 
 	[ -z "$oldUserKey" ] || [ -z "$oldAppToken" ] && return 0
@@ -4686,8 +4694,8 @@ migrate_pushover_credentials () {
 
 	# Secrets on security's stdin rather than argv - see notify_pushover_setup.
 	security -i 2>/dev/null <<-SECEOF
-		add-generic-password -U -s makedrive-pushover-userkey -a makedrive -w ${oldUserKey} "${makedrivePushoverKeychain}"
-		add-generic-password -U -s makedrive-pushover-apptoken -a makedrive -w ${oldAppToken} "${makedrivePushoverKeychain}"
+		add-generic-password -U -s ${makedrivePushoverUserKeyService} -a ${makedrivePushoverAccount} -w ${oldUserKey} "${makedrivePushoverKeychain}"
+		add-generic-password -U -s ${makedrivePushoverAppTokenService} -a ${makedrivePushoverAccount} -w ${oldAppToken} "${makedrivePushoverKeychain}"
 	SECEOF
 
 	# Only remove the System Keychain originals once the login keychain copies
@@ -4695,9 +4703,9 @@ migrate_pushover_credentials () {
 	# status).
 	if [ "$(notify_pushover_read_userkey)" = "$oldUserKey" ] && \
 	   [ "$(notify_pushover_read_apptoken)" = "$oldAppToken" ]; then
-		security delete-generic-password -s "makedrive-pushover-userkey" -a "makedrive" \
+		security delete-generic-password -s "$makedrivePushoverUserKeyService" -a "$makedrivePushoverAccount" \
 			"$sysKeychain" >/dev/null 2>&1
-		security delete-generic-password -s "makedrive-pushover-apptoken" -a "makedrive" \
+		security delete-generic-password -s "$makedrivePushoverAppTokenService" -a "$makedrivePushoverAccount" \
 			"$sysKeychain" >/dev/null 2>&1
 	fi
 
