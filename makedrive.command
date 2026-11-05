@@ -68,6 +68,16 @@ hfsEsdPackage="InstallESDDmg.pkg"
 hfsRawFiles=( BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist )
 hfsFiles=( "$hfsAppPackage" "$hfsEsdPackage" "${hfsRawFiles[@]}" )
 
+# The shape of the version and build values catalog_fetch_vars prints. Its output
+# is sourced by a root shell, and so is the launch sync's cache of it, so each
+# value has to be the shape it can legitimately have. They are written here once:
+# the walker is handed them, and catalog_cache_valid builds its check from them,
+# so the two can't drift apart (a cache check stricter than the walker would
+# throw away every cache, and the two-hour shortcut would quietly stop working).
+# Both work in grep -E and in Python's re.
+catalogVersionPattern='[0-9]+(\.[0-9]+)*'
+catalogBuildPattern='[0-9A-Za-z.]*'
+
 # Image definitions, imageFilePaths, and build type configurations are
 # loaded from makedrive.conf at startup.
 
@@ -1734,6 +1744,8 @@ catalog_fetch_vars () {
 	MAKEDRIVE_CATALOG_MODE="$1" \
 	MAKEDRIVE_CATALOG_URLS="$_catURLs" \
 	MAKEDRIVE_HFS_FILES="$_hfsFileList" \
+	MAKEDRIVE_VERSION_PATTERN="$catalogVersionPattern" \
+	MAKEDRIVE_BUILD_PATTERN="$catalogBuildPattern" \
 	python3 << 'MAKEDRIVE_CATALOG_PYEOF'
 import subprocess, gzip, plistlib, sys, re, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1741,6 +1753,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Shared catalog walker. MAKEDRIVE_CATALOG_MODE is "sync" or "menu": the
 # catalog_fetch_vars banner above says what each one prints.
 MODE = os.environ.get("MAKEDRIVE_CATALOG_MODE", "sync")
+
+# What a version and a build may look like in the output: catalogVersionPattern
+# and catalogBuildPattern at the top of the script, handed over in the
+# environment. Without them nothing is printed, which the caller treats like a
+# network failure, so a missing pattern can't loosen anything.
+try:
+    SAFE_VERSION = re.compile("^(?:" + os.environ["MAKEDRIVE_VERSION_PATTERN"] + ")$")
+    SAFE_BUILD   = re.compile("^(?:" + os.environ["MAKEDRIVE_BUILD_PATTERN"] + ")$")
+except KeyError:
+    sys.exit(0)
 
 # Fetch a URL with curl. Returns the raw bytes, or None on any failure.
 def fetch(url, timeout=30):
@@ -1848,8 +1870,6 @@ with ThreadPoolExecutor(max_workers=15) as ex:
 # anything that doesn't match the only shape it can legitimately have is
 # dropped - a value these patterns reject could otherwise break out of its
 # double quotes when sourced.
-SAFE_VERSION = re.compile(r'^[0-9]+(\.[0-9]+)*$')
-SAFE_BUILD   = re.compile(r'^[0-9A-Za-z.]*$')
 SAFE_URL     = re.compile(r'^https://[A-Za-z0-9._~:/%+=-]+$')
 
 final = sorted(newest.values(), key=lambda e: parse_ver(e["version"]), reverse=True)
@@ -2587,6 +2607,32 @@ END { print n+0 }
 
 
 # ------------------------------------------------------------------------------
+# catalog_cache_valid
+# Whether a cached copy of catalog_fetch_vars's sync output is safe to source as
+# root: it has the COUNT line, and every line is one of the only three shapes the
+# walker prints, with versions and builds held to the patterns the walker uses
+# (catalogVersionPattern and catalogBuildPattern). The cache lives in the
+# user-editable support directory, so it is never trusted on its say-so.
+#
+# $1 - Path of the cache file
+# ------------------------------------------------------------------------------
+catalog_cache_valid () {
+
+	local file="$1" countLine versionLine buildLine
+
+	grep -q '^MACOS_DL_COUNT=' "$file" 2>/dev/null || return 1
+
+	countLine='^MACOS_DL_COUNT=[0-9]+$'
+	versionLine="^MACOS_DL_VERSION_[0-9]+=\"(${catalogVersionPattern})\"\$"
+	buildLine="^MACOS_DL_BUILD_[0-9]+=\"(${catalogBuildPattern})\"\$"
+
+	# any line that isn't one of the three shapes makes the cache unusable
+	! grep -qEv "${countLine}|${versionLine}|${buildLine}" "$file" 2>/dev/null
+
+}
+
+
+# ------------------------------------------------------------------------------
 # startup_sync_versions
 # Runs at launch before the main menu. Fetches a lightweight catalog from
 # Apple's servers (version and build only - no package URLs), compares each
@@ -2604,13 +2650,11 @@ startup_sync_versions () {
 	# A catalog result newer than two hours is reused without touching the
 	# network, making closely spaced launches effectively instant. The cache
 	# lives in the user-editable support directory, so before being sourced
-	# as root its contents are validated line by line against the only
+	# as root catalog_cache_valid checks it line by line against the only
 	# shapes catalog_fetch_vars is allowed to emit.
 	if [ -f "$cacheFile" ]; then
 		cacheAge=$(( $(date +%s) - $(stat -f%m "$cacheFile" 2>/dev/null || echo 0) ))
-		if [ "$cacheAge" -ge 0 ] && [ "$cacheAge" -lt 7200 ] && \
-		   grep -q '^MACOS_DL_COUNT=' "$cacheFile" 2>/dev/null && \
-		   ! grep -qEv '^MACOS_DL_COUNT=[0-9]+$|^MACOS_DL_VERSION_[0-9]+="[0-9.]+"$|^MACOS_DL_BUILD_[0-9]+="[0-9A-Za-z.]*"$' "$cacheFile" 2>/dev/null; then
+		if [ "$cacheAge" -ge 0 ] && [ "$cacheAge" -lt 7200 ] && catalog_cache_valid "$cacheFile"; then
 			cacheFresh=1
 		fi
 	fi
