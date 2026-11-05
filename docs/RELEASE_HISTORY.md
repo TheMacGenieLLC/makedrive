@@ -53,6 +53,10 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   block in makedrive.conf, so a link Apple moves is a conf edit. A conf from
   before this still offers them, and a link set wrongly is refused at launch
   instead of after the download.
+- **More of the conf is checked at launch:** a partition too small for its
+  installer image, which failed the restore after the whole image had been
+  built, and a build type that lists volumes after dataDrive, which were
+  silently left off the drive, are now refused with a message naming the entry.
 - **Missing images stop a build before the disk is erased:** a full drive
   build now checks that every image its build type needs is in restorekit
   before you choose a target disk.

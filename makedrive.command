@@ -2445,6 +2445,29 @@ conf_bt_detail_size () {
 
 
 # ------------------------------------------------------------------------------
+# conf_partition_needed
+# Prints the smallest partition that holds an installer image of the given size,
+# rounded up to a tenth. diskutil counts decimal GB and hdiutil binary GiB, so a
+# 21.0G image is 22.5 GB and a 22.0G partition can't hold it. asr refuses with
+# "Not enough space", but only after the whole installer has been built. The
+# numbers: a partition comes out about 0.1 GB under what was asked for, and the
+# volume inside a new image is about 0.13 GiB under the image size.
+#
+# $1 - Image size as the conf writes it (e.g. "21.0G")
+# ------------------------------------------------------------------------------
+conf_partition_needed () {
+
+	awk -v img="${1%G}" 'BEGIN {
+		need = (img - 0.13) * 1.073741824 + 0.1
+		c = int(need * 10)
+		if (c < need * 10) c++
+		printf "%.1f", c / 10
+	}'
+
+}
+
+
+# ------------------------------------------------------------------------------
 # conf_derive_build_types
 # Builds the build type registry from makedrive.conf.
 #
@@ -4864,11 +4887,18 @@ migrate_pushover_credentials () {
 # disk is partitioned; this turns a destroyed drive into an error message at
 # launch. A fixed download link (DownloadURL) has to come with its size, a whole
 # number of bytes, and be https, or the slip would show only after the download.
+# A GENERIC image's partition has to hold its image (conf_partition_needed), and
+# dataDrive has to be last in a build type, or whatever follows it is never
+# deployed. A conf may leave an installer out of every build type, though: the
+# add menu and quick deploy still use it.
 # ------------------------------------------------------------------------------
 preflight_check_conf () {
 
 	local confProblems=""
 	local key btNum volsRef deployType suffix _var val linkVar sizeVar
+	local imgSize partSize needSize i
+	local -a btVols
+	local sizePattern='^[0-9]+(\.[0-9]+)?G$'
 
 	# Collect every image key referenced anywhere: the add menu list plus the
 	# volume lists of every build type (dataDrive is checked separately).
@@ -4901,6 +4931,15 @@ preflight_check_conf () {
 				_var="${key}${suffix}"
 				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
 			done
+			# The partition has to hold the image. A size that isn't a plain number
+			# of G (22000M) isn't judged.
+			_var="${key}NewImageVolSize"; imgSize="${!_var}"
+			_var="${key}VolSize"; partSize="${!_var}"
+			if [[ "$imgSize" =~ $sizePattern ]] && [[ "$partSize" =~ $sizePattern ]]; then
+				needSize="$(conf_partition_needed "$imgSize")"
+				awk -v have="${partSize%G}" -v need="$needSize" 'BEGIN { exit !(have + 0 >= need + 0) }' ||
+					confProblems+="  ${key}VolSize is ${partSize}, too small for the ${imgSize} image (needs at least ${needSize}G)\n"
+			fi
 			;;
 		INST-A | ASD-EFI | COPY )
 			_var="${key}VolName"
@@ -4962,6 +5001,18 @@ preflight_check_conf () {
 			*[[:space:]]* ) confProblems+="  ${_var} contains whitespace ('${val}')\n" ;;
 			esac
 		fi
+	done
+
+	# build_deploy_volume stops at dataDrive, so a volume listed after it would
+	# be partitioned and then never restored.
+	for btNum in "${buildTypeNums[@]}"; do
+		volsRef="buildType${btNum}_volumes[@]"
+		btVols=( "${!volsRef}" )
+		for (( i = 0; i < ${#btVols[@]} - 1; i++ )); do
+			[ "${btVols[$i]}" = "dataDrive" ] || continue
+			confProblems+="  buildType${btNum}_volumes lists dataDrive before other volumes (they would never be deployed)\n"
+			break
+		done
 	done
 
 	# Build type partition schemes are eval-expanded too.
