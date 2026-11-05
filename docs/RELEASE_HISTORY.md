@@ -48,6 +48,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   included, so each download is labeled with and verified against the build
   Apple is serving. If the conf can't be updated, makedrive says so before
   downloading, not after.
+- **Download links live in makedrive.conf:** the fixed Apple links behind the
+  10.7 through 10.12 downloads moved from the script into each installer's
+  block in makedrive.conf, so a link Apple moves is a conf edit. A conf from
+  before this still offers them, and a link set wrongly is refused at launch
+  instead of after the download.
 - **Missing images stop a build before the disk is erased:** a full drive
   build now checks that every image its build type needs is in restorekit
   before you choose a target disk.

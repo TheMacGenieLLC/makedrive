@@ -1392,7 +1392,7 @@ add_func_dispatch () {
 # ------------------------------------------------------------------------------
 # download_verify_size
 # Compares a downloaded file's on-disk size against the size Apple's catalog
-# (or the hardcoded CDN table) says it should be. curl --fail catches HTTP
+# (or the conf's DownloadBytes) says it should be. curl --fail catches HTTP
 # errors but not silent truncation; an exact size check does, cheaply. A zero
 # or empty expected size skips the check.
 #
@@ -1454,8 +1454,9 @@ download_curl_interruptible () {
 # download_fetch_and_process
 # Downloads a macOS installer and processes it through the standard add-installer
 # pipeline. Handles three source types:
-#   cdn_dmg       - single DMG from Apple CDN (10.7-10.12); passes it to
-#                   add_installer_from_pkg to assemble the installer app
+#   cdn_dmg       - single DMG from a fixed Apple link in the conf (10.7-10.12);
+#                   passes it to add_installer_from_pkg to assemble the
+#                   installer app
 #   catalog_single - single InstallAssistant.pkg (11+); installer to /
 #   catalog_hfs    - packages (10.13-10.15); pkgutil expand → app + InstallESD.dmg
 #
@@ -1868,7 +1869,7 @@ def parse_build(b):
 # and build for each macOS generation (keyed by major, or "10.x" for the 10
 # line). Versions before 10.13 and the nonexistent 16-25 range (Apple jumped
 # 15 → 26) are dropped as catalog noise; 10.7-10.12 downloads come from
-# hardcoded Apple CDN URLs in download_installer_menu instead. Multiple
+# the fixed Apple links in makedrive.conf (see download_installer_menu). Multiple
 # products can share the same VERSION string across supplemental updates
 # (e.g. 19H2/19H4/19H15 all "10.15.7"), so build must be compared too;
 # otherwise whichever entry is processed first wins regardless of how
@@ -1986,8 +1987,9 @@ MAKEDRIVE_CATALOG_PYEOF
 # Presents a list of macOS installers available for direct download from Apple.
 # Versions 10.13 and newer come from Apple's software-update catalog (fetched
 # on demand). Versions 10.7-10.12 (except 10.9, which has no Apple-hosted
-# source) come from hardcoded Apple CDN URLs. After the user selects a version
-# the download and processing are handled by download_fetch_and_process.
+# source) come from the fixed Apple links makedrive.conf gives those installers
+# (DownloadURL and DownloadBytes). After the user selects a version the download
+# and processing are handled by download_fetch_and_process.
 # ------------------------------------------------------------------------------
 download_installer_menu () {
 
@@ -2029,7 +2031,8 @@ download_installer_menu () {
 	local catCount="$MAKEDRIVE_DLCAT_COUNT"
 
 	# Build unified download list: catalog entries (newest first, from Python),
-	# followed by CDN entries for 10.7-10.12 (newest first; 10.9 intentionally absent).
+	# followed by the entries the conf gives a fixed link (10.7-10.12, newest
+	# first; 10.9 has none).
 	local -a dlKeys dlLabels dlTypes dlURLs dlBytes dlBuilds
 
 	local i _vv _tv _uv _bv _buv _labV _rowKey
@@ -2051,26 +2054,24 @@ download_installer_menu () {
 		dlBuilds+=("${!_buv}")
 	done
 
-	# CDN entries - hardcoded Apple URLs, verified 2026-06
-	local -a _cdnKeys=( "inst1012i" "inst1011i" "inst1010i" "inst108i" "inst107i" )
-	local -a _cdnURLs=(
-		"https://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg"
-		"https://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg"
-		"https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg"
-		"https://updates.cdn-apple.com/2021/macos/031-0627-20210614-90D11F33-1A65-42DD-BBEA-E1D9F43A6B3F/InstallMacOSX.dmg"
-		"https://updates.cdn-apple.com/2021/macos/041-7683-20210614-E610947E-C7CE-46EB-8860-D26D71F0D3EA/InstallMacOSX.dmg"
-	)
-	local -a _cdnBytes=( 5007882126 6204629298 5718074248 4449317520 4720237409 )
-
-	local _ck _labV2
-	for (( i = 0; i < ${#_cdnKeys[@]}; i++ )); do
-		_ck="${_cdnKeys[$i]}"
+	# The entries the conf gives a fixed Apple link (DownloadURL and DownloadBytes),
+	# newest first (addMenuInstallers runs oldest to newest). A release the catalog
+	# already has a row for keeps that row.
+	local _ck _dlv _dbv _labV2
+	for (( i = ${#addMenuInstallers[@]} - 1; i >= 0; i-- )); do
+		_ck="${addMenuInstallers[$i]}"
+		_dlv="${_ck}DownloadURL"
+		_dbv="${_ck}DownloadBytes"
 		_labV2="${_ck}MenuLabel"
+		[ -n "${!_dlv}" ] || continue
+		case " ${dlKeys[*]} " in
+		*" $_ck "* ) continue ;;
+		esac
 		dlKeys+=("$_ck")
 		dlLabels+=("${!_labV2}")
 		dlTypes+=("cdn_dmg")
-		dlURLs+=("${_cdnURLs[$i]}")
-		dlBytes+=("${_cdnBytes[$i]}")
+		dlURLs+=("${!_dlv}")
+		dlBytes+=("${!_dbv}")
 		dlBuilds+=("")
 	done
 
@@ -2368,6 +2369,47 @@ conf_derive_menus () {
 	done
 
 	conf_build_image_paths
+
+}
+
+
+# ------------------------------------------------------------------------------
+# conf_default_download_links
+# Fills in the fixed Apple download links (DownloadURL and DownloadBytes) of the
+# five installers that have them, for a makedrive.conf from before the links
+# moved there from this script. Without it a newer makedrive.command run with
+# an older conf would quietly drop the 10.7 to 10.12 downloads from the download
+# menu. A conf with any link of its own is left as it is, so it can take links
+# away (though not every one: a conf with none looks like one from before), and
+# only installers the conf defines are filled in. Once no one is running a conf
+# from before Build 203, delete this and its call at launch.
+# ------------------------------------------------------------------------------
+conf_default_download_links () {
+
+	local -a oldKeys=( "inst1012i" "inst1011i" "inst1010i" "inst108i" "inst107i" )
+	local -a oldURLs=(
+		"https://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg"
+		"https://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2021/macos/031-0627-20210614-90D11F33-1A65-42DD-BBEA-E1D9F43A6B3F/InstallMacOSX.dmg"
+		"https://updates.cdn-apple.com/2021/macos/041-7683-20210614-E610947E-C7CE-46EB-8860-D26D71F0D3EA/InstallMacOSX.dmg"
+	)
+	local -a oldBytes=( 5007882126 6204629298 5718074248 4449317520 4720237409 )
+	local _key _linkVar i
+
+	for _key in "${addMenuInstallers[@]}"; do
+		_linkVar="${_key}DownloadURL"
+		[ -n "${!_linkVar}" ] && return 0
+	done
+
+	for (( i = 0; i < ${#oldKeys[@]}; i++ )); do
+		case " ${addMenuInstallers[*]} " in
+		*" ${oldKeys[$i]} "* ) ;;
+		* ) continue ;;
+		esac
+		printf -v "${oldKeys[$i]}DownloadURL" '%s' "${oldURLs[$i]}"
+		printf -v "${oldKeys[$i]}DownloadBytes" '%s' "${oldBytes[$i]}"
+	done
 
 }
 
@@ -4820,12 +4862,13 @@ migrate_pushover_credentials () {
 # scheme) must not contain whitespace, which silently misaligns the partition
 # argument triplets. A conf typo would otherwise surface only after the target
 # disk is partitioned; this turns a destroyed drive into an error message at
-# launch.
+# launch. A fixed download link (DownloadURL) has to come with its size, a whole
+# number of bytes, and be https, or the slip would show only after the download.
 # ------------------------------------------------------------------------------
 preflight_check_conf () {
 
 	local confProblems=""
-	local key btNum volsRef deployType suffix _var val
+	local key btNum volsRef deployType suffix _var val linkVar sizeVar
 
 	# Collect every image key referenced anywhere: the add menu list plus the
 	# volume lists of every build type (dataDrive is checked separately).
@@ -4874,6 +4917,20 @@ preflight_check_conf () {
 			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)\n"
 			;;
 		esac
+
+		linkVar="${key}DownloadURL"; sizeVar="${key}DownloadBytes"
+		if [ -n "${!linkVar}" ] || [ -n "${!sizeVar}" ]; then
+			[ -z "${!linkVar}" ] && confProblems+="  ${linkVar} is not set (${sizeVar} is)\n"
+			[ -z "${!sizeVar}" ] && confProblems+="  ${sizeVar} is not set (${linkVar} is)\n"
+			case "${!linkVar}" in
+			"" | https://* ) ;;
+			* ) confProblems+="  ${linkVar} is '${!linkVar}' (must start with https://)\n" ;;
+			esac
+			case "${!sizeVar}" in
+			"" ) ;;
+			*[!0-9]* ) confProblems+="  ${sizeVar} is '${!sizeVar}' (must be a whole number of bytes)\n" ;;
+			esac
+		fi
 
 		for suffix in VolType StartName VolSize; do
 			_var="${key}${suffix}"
@@ -5219,6 +5276,9 @@ fi
 # them. See conf_derive_menus and conf_derive_build_types.
 conf_derive_menus "$_makedrive_active_conf"
 conf_derive_build_types "$_makedrive_active_conf"
+
+# A conf from before the download links moved into it still gets them.
+conf_default_download_links
 
 # Performing individual checks once at start of execution, rather than every run
 # through the main application loop. The conf lint runs first so nothing else

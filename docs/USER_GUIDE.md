@@ -183,7 +183,9 @@ makedrive.conf defines:
   diagnostics alike, keyed by a unique prefix (for example `inst2600u`).
   Each block sets the DMG path, the deploy type, display name, final
   volume name, partition size and filesystem, the macOS build number to
-  verify against, and the label shown in the add-image menu.
+  verify against, and the label shown in the add-image menu. The installers
+  Apple still serves from a fixed link (10.7 through 10.12) also carry that
+  link and its size, which is where the download menu gets them.
 - **Build types:** the groupings offered when you build a drive (see
   [Building Install Drives](#building-install-drives)).
 - **Catalog URLs:** the Apple software-update catalog index URLs makedrive
