@@ -56,6 +56,18 @@ makedrivePushoverUserKeyService="${makedrivePushoverServicePrefix}-userkey"
 makedrivePushoverAppTokenService="${makedrivePushoverServicePrefix}-apptoken"
 unset _makedrive_userhome
 
+# The files a 10.13 to 10.15 download is made of: two packages that get expanded
+# (the installer app's skeleton, and the one holding InstallESD.dmg) and four raw
+# files that go beside InstallESD.dmg inside the app. A .chunklist has to sit next
+# to its .dmg for the kernel's root-dmg authentication at boot, and a missing one
+# panicked real 10.15 hardware. The download, the move into the app and the size
+# the download menu shows all read these, so they can't disagree about which
+# files count.
+hfsAppPackage="InstallAssistantAuto.pkg"
+hfsEsdPackage="InstallESDDmg.pkg"
+hfsRawFiles=( BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist )
+hfsFiles=( "$hfsAppPackage" "$hfsEsdPackage" "${hfsRawFiles[@]}" )
+
 # Image definitions, imageFilePaths, and build type configurations are
 # loaded from makedrive.conf at startup.
 
@@ -1554,17 +1566,16 @@ download_fetch_and_process () {
 
 		local -a _hfsURLs
 		IFS='|' read -ra _hfsURLs <<< "$dlURLs"
-		local _hfsURL _hfsFname
+		local _hfsURL _hfsFname _hfsName _hfsWanted
 		for _hfsURL in "${_hfsURLs[@]}"; do
 			[ -z "$_hfsURL" ] && continue
 			_hfsFname="${_hfsURL##*/}"
-			# Only download the files listed in the catalog_hfs comment above.
-			case "$_hfsFname" in
-				InstallAssistantAuto.pkg|InstallESDDmg.pkg|\
-				BaseSystem.dmg|AppleDiagnostics.dmg|\
-				BaseSystem.chunklist|AppleDiagnostics.chunklist) ;;
-				*) continue ;;
-			esac
+			# Only the files hfsFiles names, compared whole
+			_hfsWanted=""
+			for _hfsName in "${hfsFiles[@]}"; do
+				[ "$_hfsFname" = "$_hfsName" ] && _hfsWanted=1
+			done
+			[ -n "$_hfsWanted" ] || continue
 			echo "Downloading $_hfsFname..."
 			download_curl_interruptible "$_hfsURL" "$tmpDir/$_hfsFname"
 			local hfsDlResult=$?
@@ -1603,11 +1614,13 @@ download_fetch_and_process () {
 
 		local _autoStage="$tmpDir/auto_stage"
 		local _esdStage="$tmpDir/esd_stage"
+		local _autoPkg="$tmpDir/$hfsAppPackage"
+		local _esdPkg="$tmpDir/${hfsEsdPackage:?}"
 
 		echo ""
 		echo "Expanding installer package..."
-		if ! pkgutil --expand-full "$tmpDir/InstallAssistantAuto.pkg" "$_autoStage" 2>/dev/null; then
-			echo "Could not expand InstallAssistantAuto.pkg."
+		if ! pkgutil --expand-full "$_autoPkg" "$_autoStage" 2>/dev/null; then
+			echo "Could not expand ${hfsAppPackage}."
 			echo ""
 			rm -rf "$tmpDir"
 			disp_pause_for_input
@@ -1625,8 +1638,8 @@ download_fetch_and_process () {
 		fi
 
 		echo "Expanding ESD package (this may take several minutes - the package is large)..."
-		if ! pkgutil --expand-full "$tmpDir/InstallESDDmg.pkg" "$_esdStage" 2>/dev/null; then
-			echo "Could not expand InstallESDDmg.pkg."
+		if ! pkgutil --expand-full "$_esdPkg" "$_esdStage" 2>/dev/null; then
+			echo "Could not expand ${hfsEsdPackage}."
 			echo ""
 			rm -rf "$tmpDir"
 			disp_pause_for_input
@@ -1651,12 +1664,12 @@ download_fetch_and_process () {
 			disp_pause_for_input
 			return 1
 		fi
-		rm -rf "$_esdStage" "$tmpDir/InstallESDDmg.pkg"
+		rm -rf "$_esdStage" "$_esdPkg"
 
 		# createinstallmedia reads BaseSystem.dmg and AppleDiagnostics.dmg from
 		# SharedSupport. Each .chunklist has to sit beside its .dmg, under the
 		# same base name, for the kernel's root-dmg authentication at boot.
-		for _dmg in BaseSystem.dmg BaseSystem.chunklist AppleDiagnostics.dmg AppleDiagnostics.chunklist; do
+		for _dmg in "${hfsRawFiles[@]}"; do
 			[ -f "$tmpDir/$_dmg" ] && mv "$tmpDir/$_dmg" "$_sharedSupport/$_dmg"
 		done
 
@@ -1713,13 +1726,15 @@ download_fetch_and_process () {
 # ------------------------------------------------------------------------------
 catalog_fetch_vars () {
 
-	local _catURLs _menuOrder
+	local _catURLs _menuOrder _hfsFileList
 	printf -v _catURLs '%s\n' "${catalogURLs[@]}"
 	printf -v _menuOrder '%s\n' "${addMenuOrder[@]}"
+	printf -v _hfsFileList '%s\n' "${hfsFiles[@]}"
 
 	MAKEDRIVE_CATALOG_MODE="$1" \
 	MAKEDRIVE_CATALOG_URLS="$_catURLs" \
 	MAKEDRIVE_MENU_ORDER="$_menuOrder" \
+	MAKEDRIVE_HFS_FILES="$_hfsFileList" \
 	python3 << 'MAKEDRIVE_CATALOG_PYEOF'
 import subprocess, gzip, plistlib, sys, re, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1871,12 +1886,10 @@ def real_packages(packages):
             result.append((url, size))
     return result
 
-# The files download_fetch_and_process's catalog_hfs case actually downloads;
-# must match the filename filter there. Used only to size the menu entry so
-# it reflects what will really transfer.
-HFS_DOWNLOADED = {"InstallAssistantAuto.pkg", "InstallESDDmg.pkg",
-                  "BaseSystem.dmg", "AppleDiagnostics.dmg",
-                  "BaseSystem.chunklist", "AppleDiagnostics.chunklist"}
+# The files download_fetch_and_process's catalog_hfs case downloads: hfsFiles
+# at the top of the script, handed over in the environment. Used only to size
+# the menu entry so it reflects what will really transfer.
+HFS_DOWNLOADED = {f for f in os.environ.get("MAKEDRIVE_HFS_FILES", "").splitlines() if f}
 
 def conf_key_for(version):
     p = parse_ver(version)
