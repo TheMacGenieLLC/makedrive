@@ -1257,6 +1257,91 @@ add_mas_createinstallmedia_mav () {
 
 
 # ------------------------------------------------------------------------------
+# add_func_resolve
+# Looks up what an image's AddFunc means: sets addFuncTarget to the function
+# that adds it and addFuncArgs to the arguments that function takes, read from
+# the image's conf variables. This is the one place an AddFunc is routed: its
+# function and its argument order are written down here and nowhere else (the
+# values are also listed in the launch check's message and the conf's legend,
+# for people to read). The add menu and the download both add through
+# add_func_dispatch, which calls what is found here, and the launch check asks
+# it about every entry, which is safe because it runs nothing. Returns 1, with
+# both left empty, for an AddFunc that has no function.
+#
+# $1 - Conf key (e.g. "inst2600u")
+# ------------------------------------------------------------------------------
+add_func_resolve () {
+
+	local key="$1" _v addFunc appPath buildNum newVolSize finalName instPath dispName srcPath volName
+
+	_v="${key}AddFunc";         addFunc="${!_v}"
+	_v="${key}AppPath";         appPath="${!_v}"
+	_v="${key}BuildNumber";     buildNum="${!_v}"
+	_v="${key}NewImageVolSize"; newVolSize="${!_v}"
+	_v="${key}FinalName";       finalName="${!_v}"
+	instPath="${!key}"
+	_v="${key}DispName";        dispName="${!_v}"
+	_v="${key}SourceImagePath"; srcPath="${!_v}"
+	_v="${key}VolName";         volName="${!_v}"
+
+	addFuncTarget=""
+	addFuncArgs=()
+
+	case "$addFunc" in
+
+	COPY_SINGLE )
+		addFuncTarget="add_copy_single_dmg"
+		addFuncArgs=( "$dispName" "$instPath" "$volName" "$buildNum" "$srcPath" "$appPath" )
+		;;
+
+	CREATE_INSTALL_MEDIA )
+		addFuncTarget="add_mas_createinstallmedia"
+		addFuncArgs=( "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName" )
+		;;
+
+	CREATE_INSTALL_MEDIA_MAV )
+		addFuncTarget="add_mas_createinstallmedia_mav"
+		addFuncArgs=( "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName" )
+		;;
+
+	* )
+		return 1
+		;;
+
+	esac
+
+}
+
+
+# ------------------------------------------------------------------------------
+# add_func_dispatch
+# Adds an image to restorekit by the function its AddFunc names, handing it the
+# arguments add_func_resolve found. Returns that function's status. An AddFunc
+# with no function is reported and returns 1.
+#
+# $1 - Conf key (e.g. "inst2600u")
+# ------------------------------------------------------------------------------
+add_func_dispatch () {
+
+	local key="$1" _v
+
+	if ! add_func_resolve "$key"; then
+		_v="${key}AddFunc"
+		disp_print_header
+		echo "The AddFunc configured for ${key} in makedrive.conf is not"
+		echo "recognized ('${!_v}'), so nothing was added."
+		echo "Correct the conf entry and try again."
+		echo ""
+		disp_pause_for_input
+		return 1
+	fi
+
+	"$addFuncTarget" "${addFuncArgs[@]}"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # download_verify_size
 # Compares a downloaded file's on-disk size against the size Apple's catalog
 # (or the hardcoded CDN table) says it should be. curl --fail catches HTTP
@@ -1339,18 +1424,13 @@ download_fetch_and_process () {
 
 	local confKey="$1" dlType="$2" dlURLs="$3" dlLabel="$4" dlExpectedBytes="${5:-0}"
 
-	# Resolve conf variables via indirect expansion
-	local _v appPath buildNum newVolSize finalName instPath dispName addFunc srcPath volName
+	# Resolve the conf variables the download itself uses; add_func_dispatch
+	# reads every value it needs again when it hands the installer on.
+	local _v appPath buildNum dispName
 
 	_v="${confKey}AppPath";         appPath="${!_v}"
 	_v="${confKey}BuildNumber";     buildNum="${!_v}"
-	_v="${confKey}NewImageVolSize"; newVolSize="${!_v}"
-	_v="${confKey}FinalName";       finalName="${!_v}"
-	instPath="${!confKey}"
 	_v="${confKey}DispName";        dispName="${!_v}"
-	_v="${confKey}AddFunc";         addFunc="${!_v}"
-	_v="${confKey}SourceImagePath"; srcPath="${!_v}"
-	_v="${confKey}VolName";         volName="${!_v}"
 
 	local tmpDir
 	tmpDir=$(mktemp -d "$makedriveScratchDir/download.XXXXXX") || {
@@ -1602,35 +1682,9 @@ download_fetch_and_process () {
 
 	rm -rf "$tmpDir"
 
-	# Dispatch to the standard add-installer pipeline - same calls as add_menu_image_list
-	local addResult=1
-	case "$addFunc" in
-
-	COPY_SINGLE )
-		add_copy_single_dmg "$dispName" "$instPath" "$volName" "$buildNum" "$srcPath" "$appPath"
-		addResult=$?
-		;;
-
-	CREATE_INSTALL_MEDIA_MAV )
-		add_mas_createinstallmedia_mav "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
-		addResult=$?
-		;;
-
-	CREATE_INSTALL_MEDIA )
-		add_mas_createinstallmedia "$appPath" "$buildNum" "$newVolSize" "$finalName" "$instPath" "$dispName"
-		addResult=$?
-		;;
-
-	* )
-		disp_print_header
-		echo "The AddFunc configured for ${confKey} in makedrive.conf is not"
-		echo "recognized ('${addFunc}'), so the downloaded installer was not"
-		echo "processed. Correct the conf entry and try again."
-		echo ""
-		disp_pause_for_input
-		;;
-
-	esac
+	# Hand the installer to the same add pipeline the add menu uses
+	add_func_dispatch "$confKey"
+	local addResult=$?
 
 	# The app installed or assembled to /Applications is the only copy of
 	# the download, so its removal is offered rather than assumed.
@@ -2123,8 +2177,7 @@ add_menu_image_list () {
 	local menuKeys=("${!2}")
 	local categoryNote="$3"
 	local missingListVar="${4:-}"
-	local addMenuIdx addMenuLabelVar addMenuKey addFuncVar instPath imageChoice
-	local appPathVar newImageVolSizeVar finalNameVar dispNameVar volNameVar buildNumVar sourcePathVar
+	local addMenuIdx addMenuLabelVar addMenuKey imageChoice
 	local addMenuLabels=()
 
 	if [ "${#menuKeys[@]}" -eq 0 ]; then
@@ -2181,58 +2234,7 @@ add_menu_image_list () {
 
 				addMenuKey="${menuKeys[$addMenuIdx]}"
 
-				addFuncVar="${addMenuKey}AddFunc"
-				instPath="${!addMenuKey}"
-				appPathVar="${addMenuKey}AppPath"
-				newImageVolSizeVar="${addMenuKey}NewImageVolSize"
-				finalNameVar="${addMenuKey}FinalName"
-				dispNameVar="${addMenuKey}DispName"
-				volNameVar="${addMenuKey}VolName"
-				buildNumVar="${addMenuKey}BuildNumber"
-				sourcePathVar="${addMenuKey}SourceImagePath"
-
-				case "${!addFuncVar}" in
-
-				"COPY_SINGLE" )
-					add_copy_single_dmg \
-						"${!dispNameVar}" \
-						"$instPath" \
-						"${!volNameVar}" \
-						"${!buildNumVar}" \
-						"${!sourcePathVar}" \
-						"${!appPathVar}"
-					;;
-
-				"CREATE_INSTALL_MEDIA" )
-					add_mas_createinstallmedia \
-						"${!appPathVar}" \
-						"${!buildNumVar}" \
-						"${!newImageVolSizeVar}" \
-						"${!finalNameVar}" \
-						"$instPath" \
-						"${!dispNameVar}"
-					;;
-
-				"CREATE_INSTALL_MEDIA_MAV" )
-					add_mas_createinstallmedia_mav \
-						"${!appPathVar}" \
-						"${!buildNumVar}" \
-						"${!newImageVolSizeVar}" \
-						"${!finalNameVar}" \
-						"$instPath" \
-						"${!dispNameVar}"
-					;;
-
-				* )
-					disp_print_header
-					echo "The AddFunc configured for ${addMenuKey} in makedrive.conf is not"
-					echo "recognized ('${!addFuncVar}'). No action was taken. Correct the"
-					echo "conf entry and try again."
-					echo ""
-					disp_pause_for_input
-					;;
-
-				esac
+				add_func_dispatch "$addMenuKey"
 
 			fi
 			;;
@@ -4790,12 +4792,12 @@ preflight_check_conf () {
 
 	# AddFunc routes each add menu entry to its processing function; an
 	# unrecognized value would otherwise surface only after a download.
+	# add_func_resolve is the table the add menu and the download use. It runs
+	# nothing, so asking it about every entry here is safe.
 	for key in "${addMenuOrder[@]}"; do
+		add_func_resolve "$key" && continue
 		_var="${key}AddFunc"
-		case "${!_var}" in
-		COPY_SINGLE|CREATE_INSTALL_MEDIA|CREATE_INSTALL_MEDIA_MAV ) ;;
-		* ) confProblems+="  ${_var} is '${!_var}' (must be COPY_SINGLE, CREATE_INSTALL_MEDIA, or CREATE_INSTALL_MEDIA_MAV)\n" ;;
-		esac
+		confProblems+="  ${_var} is '${!_var}' (must be COPY_SINGLE, CREATE_INSTALL_MEDIA, or CREATE_INSTALL_MEDIA_MAV)\n"
 	done
 
 	# The dataDrive pseudo-key feeds the same partition string.
