@@ -753,6 +753,29 @@ add_mas_build_mismatch () {
 
 
 # ------------------------------------------------------------------------------
+# installer_darwin_major
+# Prints the Darwin major version an installer's macOS build string starts with
+# (19H15 is 19, 8R4061a is 8, 20G1443 is 20): 13 for Mavericks, 16 for Sierra,
+# 18 and 19 for Mojave and Catalina, whose binaries need re-signing. The conf's
+# BuildNumber is optional, so when it is empty the build is read out of the
+# installer instead, and nothing that depends on the answer can quietly switch
+# itself off for a conf that leaves it out. Prints nothing if neither gives a
+# build.
+#
+# $1 - Path to the installer application bundle
+# $2 - The conf's build string for it (may be empty)
+# ------------------------------------------------------------------------------
+installer_darwin_major () {
+
+	local build="$2"
+
+	[ -z "$build" ] && build=$(read_installer_build "$1")
+	printf '%s' "${build%%[!0-9]*}"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # add_resign_installer_bundle
 # Ad-hoc re-signs every executable file inside an installer bundle, then the
 # bundle itself. On Golden Gate and later, AMFI validates any binary marked
@@ -893,8 +916,9 @@ add_mas_createinstallmedia_impl () {
 		# and later. 11+ binaries are still in current trust caches and run
 		# without re-signing; ad-hoc re-signing those on Apple Silicon carries
 		# real risk since Reduced Security still enforces identity requirements
-		# that ad-hoc signatures do not satisfy.
-		case "$2" in 18*|19*)
+		# that ad-hoc signatures do not satisfy. The conf's build is optional, so
+		# installer_darwin_major reads the installer's own when it is empty.
+		case "$(installer_darwin_major "$1" "$2")" in 18|19)
 			add_resign_installer_bundle "$1"
 			;;
 		esac
@@ -1218,13 +1242,15 @@ add_mas_createinstallmedia_mav () {
 	# Sierra (10.12) forkbombs on all hosts: a CFBundleShortVersionString
 	# mismatch makes createinstallmedia spawn runaway child instances (EAGAIN /
 	# error 35). add_mas_createinstallmedia_impl patches Info.plist to match.
-	# Darwin 16 = Sierra, so its build strings start with "16".
-	local installerBuild="$2"
-	[ -z "$installerBuild" ] && installerBuild=$(read_installer_build "$1")
+	# Darwin 16 = Sierra and 13 = Mavericks, which is what their build strings
+	# start with (installer_darwin_major reads the installer's own if the conf
+	# gives none).
+	local darwinMajor
+	darwinMajor=$(installer_darwin_major "$1" "$2")
 	local isSierra=0
-	case "$installerBuild" in 16*) isSierra=1 ;; esac
+	[ "$darwinMajor" = "16" ] && isSierra=1
 	local isMavericks=0
-	case "$installerBuild" in 13*) isMavericks=1 ;; esac
+	[ "$darwinMajor" = "13" ] && isMavericks=1
 
 	# For 10.9-10.12, the installer is no longer available through the Mac App
 	# Store and must be sourced from a flat installer package. If the app is
