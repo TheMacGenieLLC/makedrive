@@ -1717,7 +1717,8 @@ download_fetch_and_process () {
 #
 #   sync - MACOS_DL_* version/build pairs only (lightweight startup check)
 #   menu - the same pairs, plus MAKEDRIVE_DLCAT_* rows with download URLs
-#          and sizes
+#          and sizes. A row names its version, not a conf entry: which entry
+#          that is, is conf_key_for_version's business.
 #
 # Callers redirect stdout to a temp file, verify the COUNT marker is present
 # (network failure produces no output), and source it.
@@ -1726,14 +1727,12 @@ download_fetch_and_process () {
 # ------------------------------------------------------------------------------
 catalog_fetch_vars () {
 
-	local _catURLs _menuOrder _hfsFileList
+	local _catURLs _hfsFileList
 	printf -v _catURLs '%s\n' "${catalogURLs[@]}"
-	printf -v _menuOrder '%s\n' "${addMenuOrder[@]}"
 	printf -v _hfsFileList '%s\n' "${hfsFiles[@]}"
 
 	MAKEDRIVE_CATALOG_MODE="$1" \
 	MAKEDRIVE_CATALOG_URLS="$_catURLs" \
-	MAKEDRIVE_MENU_ORDER="$_menuOrder" \
 	MAKEDRIVE_HFS_FILES="$_hfsFileList" \
 	python3 << 'MAKEDRIVE_CATALOG_PYEOF'
 import subprocess, gzip, plistlib, sys, re, os
@@ -1754,10 +1753,8 @@ def fetch(url, timeout=30):
     except Exception:
         return None
 
-# Catalog index URLs come from catalogURLs in makedrive.conf. MENU_ORDER is
-# addMenuOrder, for mapping versions to conf keys (menu mode only).
+# Catalog index URLs come from catalogURLs in makedrive.conf.
 CATALOG_URLS = [u for u in os.environ.get("MAKEDRIVE_CATALOG_URLS", "").splitlines() if u]
-MENU_ORDER   = [k for k in os.environ.get("MAKEDRIVE_MENU_ORDER",   "").splitlines() if k]
 
 # Merge the Products dict from every catalog (gzip-compressed plist). On a key
 # collision the earlier catalog wins, so list the freshest catalog first.
@@ -1891,22 +1888,9 @@ def real_packages(packages):
 # the menu entry so it reflects what will really transfer.
 HFS_DOWNLOADED = {f for f in os.environ.get("MAKEDRIVE_HFS_FILES", "").splitlines() if f}
 
-def conf_key_for(version):
-    p = parse_ver(version)
-    major = p[0]
-    key_root = (1000 + p[1]) if major == 10 else (major * 100)
-    prefix = f"inst{key_root}"
-    for k in MENU_ORDER:
-        if k.startswith(prefix):
-            return k
-    return None
-
 rows = []
 for entry in final:
     version = entry["version"]
-    key     = conf_key_for(version)
-    if not key:
-        continue
     pkgs = real_packages(entry["packages"])
     p = parse_ver(version)
     if p[0] >= 11:
@@ -1915,7 +1899,7 @@ for entry in final:
         size = next((s for u, s in pkgs if "InstallAssistant.pkg" in u), 0)
         if not url:
             continue
-        rows.append((key, entry["build"], "catalog_single", url, size))
+        rows.append((version, entry["build"], "catalog_single", url, size))
     elif p[0] == 10 and p[1] >= 13:
         # 10.13-10.15: pass the distribution URL plus every package URL;
         # download_fetch_and_process's catalog_hfs case decides which files get
@@ -1926,23 +1910,22 @@ for entry in final:
         total_size = sum(pkg.get("Size", 0) for pkg in entry["packages"]
                          if pkg.get("URL", "").split("/")[-1] in HFS_DOWNLOADED)
         combined = "|".join([dist_url] + all_pkg_urls)
-        rows.append((key, entry["build"], "catalog_hfs", combined, total_size))
+        rows.append((version, entry["build"], "catalog_hfs", combined, total_size))
 
-# Same sourced-by-root reasoning as above. dtype is script-internal and key
-# comes from the local conf, but checking them too costs nothing.
-SAFE_KEY  = re.compile(r'^inst[A-Za-z0-9]+$')
+# Same sourced-by-root reasoning as above. dtype is script-internal, but
+# checking it too costs nothing.
 SAFE_TYPE = re.compile(r'^[a-z_]+$')
 
-def row_is_safe(key, build, dtype, url, size):
+def row_is_safe(version, build, dtype, url, size):
     # url is a single URL, or pipe-separated URLs for catalog_hfs
-    return bool(SAFE_KEY.match(key) and SAFE_BUILD.match(build)
+    return bool(SAFE_VERSION.match(version) and SAFE_BUILD.match(build)
                 and SAFE_TYPE.match(dtype) and str(size).isdigit()
                 and all(SAFE_URL.match(u) for u in url.split("|")))
 
 rows = [r for r in rows if row_is_safe(*r)]
 print(f"MAKEDRIVE_DLCAT_COUNT={len(rows)}")
-for i, (key, build, dtype, url, size) in enumerate(rows):
-    print(f'MAKEDRIVE_DLCAT_{i}_KEY="{key}"')
+for i, (version, build, dtype, url, size) in enumerate(rows):
+    print(f'MAKEDRIVE_DLCAT_{i}_VERSION="{version}"')
     print(f'MAKEDRIVE_DLCAT_{i}_BUILD="{build}"')
     print(f'MAKEDRIVE_DLCAT_{i}_TYPE="{dtype}"')
     print(f'MAKEDRIVE_DLCAT_{i}_URL="{url}"')
@@ -2003,15 +1986,18 @@ download_installer_menu () {
 	# followed by CDN entries for 10.7-10.12 (newest first; 10.9 intentionally absent).
 	local -a dlKeys dlLabels dlTypes dlURLs dlBytes dlBuilds
 
-	local i _kv _tv _uv _bv _buv _labV
+	local i _vv _tv _uv _bv _buv _labV _rowKey
 	for (( i = 0; i < catCount; i++ )); do
-		_kv="MAKEDRIVE_DLCAT_${i}_KEY"
+		_vv="MAKEDRIVE_DLCAT_${i}_VERSION"
+		# A release the conf has no entry for has nothing to hang a row on, so it
+		# isn't offered (tools/drift-watch is what flags that gap).
+		_rowKey="$(conf_key_for_version "${!_vv}")" || continue
 		_tv="MAKEDRIVE_DLCAT_${i}_TYPE"
 		_uv="MAKEDRIVE_DLCAT_${i}_URL"
 		_bv="MAKEDRIVE_DLCAT_${i}_BYTES"
 		_buv="MAKEDRIVE_DLCAT_${i}_BUILD"
-		_labV="${!_kv}MenuLabel"
-		dlKeys+=("${!_kv}")
+		_labV="${_rowKey}MenuLabel"
+		dlKeys+=("$_rowKey")
 		dlLabels+=("${!_labV}")
 		dlTypes+=("${!_tv}")
 		dlURLs+=("${!_uv}")
@@ -2442,6 +2428,49 @@ conf_version_newer () {
 
 
 # ------------------------------------------------------------------------------
+# conf_key_for_version
+# Prints the conf key of the public installer entry for a macOS version in
+# Apple's catalog: the first GENERIC entry in addMenuOrder whose key starts with
+# the version's root (10.15.7 is inst1015, 26.5.1 is inst2600). The launch sync
+# uses it to know which entry to bring up to date, and the download menu to know
+# which entry a catalog row is, so the two can't land on different entries.
+# Prints nothing and returns 1 when the conf has no such entry or the version
+# isn't a plain number.
+#
+# $1 - Catalog version (e.g. "26.5.1")
+# ------------------------------------------------------------------------------
+conf_key_for_version () {
+
+	local ver="$1" osMajor osMinor keyRoot menuKey _t
+
+	case "$ver" in
+	"" | *[!0-9.]* ) return 1 ;;
+	esac
+
+	osMajor="${ver%%.*}"
+	if [ "$osMajor" = "10" ]; then
+		# 10 alone has no minor release to name an entry by
+		case "$ver" in 10.* ) ;; * ) return 1 ;; esac
+		osMinor="${ver#*.}"; osMinor="${osMinor%%.*}"
+		keyRoot=$(( 1000 + 10#${osMinor:-0} ))
+	else
+		keyRoot=$(( 10#${osMajor:-0} * 100 ))
+	fi
+
+	for menuKey in "${addMenuOrder[@]}"; do
+		[[ "$menuKey" == "inst${keyRoot}"* ]] || continue
+		_t="${menuKey}DeployType"
+		[ "${!_t}" = "GENERIC" ]             || continue
+		echo "$menuKey"
+		return 0
+	done
+
+	return 1
+
+}
+
+
+# ------------------------------------------------------------------------------
 # download_sync_conf
 # Compares catalog version data (MACOS_DL_* shell vars already loaded) against
 # makedrive.conf and updates version strings and build numbers in-place wherever
@@ -2464,32 +2493,15 @@ download_sync_conf () {
 	local dlCount="$1" adoptReissue="${2:-}"
 	local confPath="$makedriveSupportConf"
 	local dlIdx dlVer dlBuild _v _b _t
-	local osMajor osMinor keyRoot instKey menuKey instPath confVer confBuild changed
+	local instKey instPath confVer confBuild changed
 	local anyUpdate=0
 
 	for (( dlIdx = 0; dlIdx < dlCount; dlIdx++ )); do
 		_v="MACOS_DL_VERSION_${dlIdx}"; dlVer="${!_v}"
 		_b="MACOS_DL_BUILD_${dlIdx}";   dlBuild="${!_b}"
 
-		# Derive the numeric root of the inst key from the catalog version
-		osMajor="${dlVer%%.*}"
-		if [ "$osMajor" = "10" ]; then
-			osMinor="${dlVer#*.}"; osMinor="${osMinor%%.*}"
-			keyRoot=$(( 1000 + osMinor ))
-		else
-			keyRoot=$(( osMajor * 100 ))
-		fi
-
-		# Find the matching GENERIC public entry in addMenuOrder
-		instKey=""
-		for menuKey in "${addMenuOrder[@]}"; do
-			[[ "$menuKey" == "inst${keyRoot}"* ]] || continue
-			_t="${menuKey}DeployType"
-			[ "${!_t}" = "GENERIC" ]             || continue
-			instKey="$menuKey"
-			break
-		done
-		[ -z "$instKey" ] && continue
+		# The GENERIC public entry for this release, if the conf has one
+		instKey="$(conf_key_for_version "$dlVer")" || continue
 
 		# Extract the version currently encoded in the conf DMG filename
 		instPath="${!instKey}"
