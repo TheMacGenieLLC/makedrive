@@ -3111,10 +3111,44 @@ build_clean_vol_folder () {
 
 
 # ------------------------------------------------------------------------------
+# deploy_type_facts
+# The one table of what each deploy type means. It runs nothing. It sets
+#   deployMethod      how the image gets onto the volume: asr (restore it with
+#                     asr), package (install the package Apple shipped on the
+#                     mounted image) or clone (copy the mounted image's contents)
+#   deployRenameFrom  the name of the deploy_restore_and_configure setting that
+#                     holds what the volume is called once that is done, which is
+#                     then renamed to finalName (finalName itself means no rename)
+#   deployBlessRoot   1 when the boot files are at the volume root, as for the
+#                     diagnostics' EFI volumes and the serializer; 0 for the
+#                     standard CoreServices folder
+#   deployNeeds       the conf settings the type needs on top of what every image
+#                     has (the launch check asks for them)
+# and returns 1 for a type it doesn't know. The conf legend and the guide say the
+# same in words. GENERIC is also what the version sync and the download menu mean
+# by a public installer (conf_key_for_version).
+#
+# $1 - Deploy type
+# ------------------------------------------------------------------------------
+deploy_type_facts () {
+
+	case "$1" in
+	GENERIC )  deployMethod=asr;     deployRenameFrom=finalName;     deployBlessRoot=0; deployNeeds=( AppPath NewImageVolSize ) ;;
+	INST-A )   deployMethod=asr;     deployRenameFrom=volName;       deployBlessRoot=0; deployNeeds=( VolName ) ;;
+	ASD-EFI )  deployMethod=asr;     deployRenameFrom=volName;       deployBlessRoot=1; deployNeeds=( VolName ) ;;
+	AXD-PKG )  deployMethod=package; deployRenameFrom=pkgTgtVolName; deployBlessRoot=1; deployNeeds=( VolName PkgName PkgTgtVolName ) ;;
+	COPY )     deployMethod=clone;   deployRenameFrom=startName;     deployBlessRoot=1; deployNeeds=( VolName ) ;;
+	* ) return 1 ;;
+	esac
+
+}
+
+
+# ------------------------------------------------------------------------------
 # deploy_restore_and_configure
 # Restores a disk image onto a prepared target volume, then renames, blesses,
-# disables Spotlight, and unmounts it. Called per-volume by build_deploy_volume
-# and directly by quick_deploy_start.
+# disables Spotlight, and unmounts it. Called through deploy_image, by
+# build_deploy_volume for each volume and by quick_deploy_start for its one.
 #
 # $1 - deployType  (GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)
 # $2 - displayName
@@ -3128,8 +3162,10 @@ build_clean_vol_folder () {
 # $8 - pkgTgtVolName (AXD-PKG only: name Apple's package gives the target volume)
 #
 # Uses globals:  diskNum, spotlightSleepInSeconds
-# Sets global:   lastBuildError
-# Returns:       0 success | 1 non-fatal error (rename/bless) | 2 fatal error (ASR)
+# Sets globals:  lastBuildError, and through deploy_type_facts deployMethod,
+#                deployRenameFrom, deployBlessRoot and deployNeeds
+# Returns:       0 success | 1 non-fatal error (rename/bless) | 2 fatal error (ASR,
+#                or a deploy type or method makedrive does not handle)
 # ------------------------------------------------------------------------------
 deploy_restore_and_configure () {
 
@@ -3142,8 +3178,19 @@ deploy_restore_and_configure () {
 	local pkgName="$7"
 	local pkgTgtVolName="$8"
 	local hadError=0
-	local renameSource="$finalName"
+	local renameSource
 	local srcDevice srcMount
+
+	# A deploy type nothing handles stops here, before the disk is touched. The
+	# launch check refuses such a conf, so this is not expected to be reached.
+	if ! deploy_type_facts "$deployType"; then
+		lastBuildError="$displayName has a deploy type makedrive does not handle ('$deployType')."
+		disp_print_header
+		echo "$lastBuildError The drive may be incomplete."
+		echo ""
+		disp_pause_for_input
+		return 2
+	fi
 
 	disp_print_header
 
@@ -3158,9 +3205,9 @@ deploy_restore_and_configure () {
 	# Get the image content onto the target volume. Most images restore with
 	# asr; AXD EFI volumes are populated by Apple's installer package, and
 	# images asr cannot restore are soft-cloned from a mounted copy instead.
-	case "$deployType" in
+	case "$deployMethod" in
 
-	AXD-PKG )
+	package )
 		echo "Installing the Apple Server Diagnostics package to the target volume."
 		echo ""
 		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
@@ -3188,10 +3235,9 @@ deploy_restore_and_configure () {
 			return 2
 		fi
 		hdiutil detach -force "$srcDevice" 2>/dev/null
-		renameSource="$pkgTgtVolName"
 		;;
 
-	COPY )
+	clone )
 		echo "Cloning the contents of the disk image to the target volume."
 		echo ""
 		IFS=$'\t' read -r srcDevice srcMount < <(dmgtool_attach_parse "$imagePath" -readonly)
@@ -3215,10 +3261,9 @@ deploy_restore_and_configure () {
 			return 2
 		fi
 		hdiutil detach -force "$srcDevice" 2>/dev/null
-		renameSource="$startName"
 		;;
 
-	* )
+	asr )
 		echo "Restoring disk image to target volume."
 		echo ""
 		if ! asr restore --source "$imagePath" --target "/Volumes/$startName/" --erase --noprompt --noverify; then
@@ -3230,16 +3275,26 @@ deploy_restore_and_configure () {
 			return 2
 		fi
 		echo ""
-		case "$deployType" in
-		INST-A | ASD-EFI ) renameSource="$volName" ;;
-		esac
+		;;
+
+	* )
+		# deploy_type_facts handed back a method this doesn't know. Nothing has
+		# been written to the volume yet, so stop instead of carrying on and
+		# reporting a volume that was never filled.
+		lastBuildError="$displayName has a deploy method ('$deployMethod') makedrive does not handle."
+		echo "$lastBuildError The drive may be incomplete."
+		echo ""
+		disp_pause_for_input
+		return 2
 		;;
 
 	esac
 
-	# Rename to final name. GENERIC images already carry finalName; INST-A and
-	# ASD-EFI volumes restore with their source volume name, AXD-PKG volumes
-	# carry the name Apple's package set, and COPY volumes keep startName.
+	# Rename to final name. What the volume is called now depends on the deploy
+	# type (deployRenameFrom): GENERIC images already carry finalName, INST-A and
+	# ASD-EFI volumes restore with their source volume name, AXD-PKG volumes carry
+	# the name Apple's package set, and COPY volumes keep startName.
+	renameSource="${!deployRenameFrom}"
 	if [ "$renameSource" != "$finalName" ]; then
 		if ! diskutil rename "/Volumes/$renameSource" "$finalName" && [ "$hadError" = "0" ]; then
 			lastBuildError="Could not rename $renameSource to $finalName."
@@ -3252,11 +3307,7 @@ deploy_restore_and_configure () {
 	# keep their boot files at the volume root, so the root folder is blessed
 	# for them; everything else blesses the standard CoreServices folder.
 	local blessFolder="/Volumes/$finalName/System/Library/CoreServices"
-	case "$deployType" in
-	ASD-EFI | AXD-PKG | COPY )
-		blessFolder="/Volumes/$finalName"
-		;;
-	esac
+	[ "$deployBlessRoot" = "1" ] && blessFolder="/Volumes/$finalName"
 	if ! bless -folder "$blessFolder" -label "$finalName"; then
 		[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
 		hadError=1
@@ -3300,10 +3351,43 @@ deploy_restore_and_configure () {
 
 
 # ------------------------------------------------------------------------------
+# deploy_image
+# Deploys one image to its prepared volume: reads the image's settings out of the
+# conf, which the full drive build and a quick deploy both need, and hands them to
+# deploy_restore_and_configure. VolName and the package settings are only defined
+# for the deploy types that use them; the lookups expand empty for every other
+# type, and the deploy decides what applies. The reason kept for a failure is
+# cleared first, so one image's is never reported for the next.
+#
+# $1 - Image key (e.g. "inst2600u")
+# Returns what deploy_restore_and_configure returns
+# ------------------------------------------------------------------------------
+deploy_image () {
+
+	local key="$1" varLookup
+	local deployType displayName imagePath startName volName finalName pkgName pkgTgtVolName
+
+	varLookup="${key}DeployType";     deployType="${!varLookup}"
+	varLookup="${key}DispName";       displayName="${!varLookup}"
+	varLookup="${key}";               imagePath="${!varLookup}"
+	varLookup="${key}StartName";      startName="${!varLookup}"
+	varLookup="${key}FinalName";      finalName="${!varLookup}"
+	varLookup="${key}VolName";        volName="${!varLookup}"
+	varLookup="${key}PkgName";        pkgName="${!varLookup}"
+	varLookup="${key}PkgTgtVolName";  pkgTgtVolName="${!varLookup}"
+
+	lastBuildError=""
+	deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
+		"$startName" "$volName" "$finalName" "$pkgName" "$pkgTgtVolName"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # build_deploy_volume
 # Iterates over a list of volume keys from makedrive.conf and deploys each one
 # to the formatted target disk. The dataDrive entry is handled inline; all
-# image volumes are dispatched to deploy_restore_and_configure.
+# image volumes are deployed through deploy_image.
 #
 # $1 - Name of array variable containing the ordered list of volume keys
 # ------------------------------------------------------------------------------
@@ -3311,8 +3395,7 @@ build_deploy_volume () {
 
 	local volumesToDeploy=("${!1}")
 	local deployError=0
-	local volumeDeployCounter key varLookup
-	local deployType displayName imagePath startName volName finalName pkgName pkgTgtVolName
+	local volumeDeployCounter key
 
 	for (( volumeDeployCounter = 0 ; volumeDeployCounter < ${#volumesToDeploy[@]} ; volumeDeployCounter++ )); do
 
@@ -3350,21 +3433,7 @@ build_deploy_volume () {
 
 		key="${volumesToDeploy[$volumeDeployCounter]}"
 
-		varLookup="${key}DeployType";  deployType="${!varLookup}"
-		varLookup="${key}DispName";    displayName="${!varLookup}"
-		varLookup="${key}";            imagePath="${!varLookup}"
-		varLookup="${key}StartName";   startName="${!varLookup}"
-		varLookup="${key}FinalName";   finalName="${!varLookup}"
-		# VolName and the package fields are only defined for the deploy
-		# types that use them; the lookups expand empty for every other
-		# type, and deploy_restore_and_configure decides what applies.
-		varLookup="${key}VolName";        volName="${!varLookup}"
-		varLookup="${key}PkgName";        pkgName="${!varLookup}"
-		varLookup="${key}PkgTgtVolName";  pkgTgtVolName="${!varLookup}"
-
-		lastBuildError=""
-		deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
-			"$startName" "$volName" "$finalName" "$pkgName" "$pkgTgtVolName"
+		deploy_image "$key"
 		local rc=$?
 		if [ "$rc" = "2" ]; then
 			deployError=1
@@ -3719,8 +3788,8 @@ quick_deploy_format_disk () {
 # ------------------------------------------------------------------------------
 # quick_deploy_start
 # Main loop for restoring a single image to a USB drive or SD card.
-# Loads conf vars for the chosen image key and calls deploy_restore_and_configure
-# directly - no DataDrive copy, no multi-volume iteration.
+# Deploys the chosen image through deploy_image - no DataDrive copy, no
+# multi-volume iteration.
 # ------------------------------------------------------------------------------
 quick_deploy_start () {
 
@@ -3734,16 +3803,12 @@ quick_deploy_start () {
 		fi
 
 		local key="$quickDeployImageKey"
-		local varLookup deployType displayName imagePath startName volName finalName volType
+		local varLookup imagePath startName volType
 		local keyRoot deployScheme
 
-		varLookup="${key}DeployType";  deployType="${!varLookup}"
-		varLookup="${key}DispName";    displayName="${!varLookup}"
 		varLookup="${key}";            imagePath="${!varLookup}"
 		varLookup="${key}StartName";   startName="${!varLookup}"
-		varLookup="${key}FinalName";   finalName="${!varLookup}"
 		varLookup="${key}VolType";     volType="${!varLookup}"
-		varLookup="${key}VolName";     volName="${!varLookup}"
 
 		# Deploy 10.5 and earlier onto APM media: PowerPC Macs can only boot
 		# from APM, and the Intel Macs those releases support boot APM
@@ -3782,9 +3847,7 @@ quick_deploy_start () {
 			continue
 		fi
 
-		lastBuildError=""
-		deploy_restore_and_configure "$deployType" "$displayName" "$imagePath" \
-			"$startName" "$volName" "$finalName"
+		deploy_image "$key"
 		local deployRC=$?
 
 		disp_print_header
@@ -4896,7 +4959,7 @@ preflight_check_conf () {
 
 	local confProblems=""
 	local key btNum volsRef deployType suffix _var val linkVar sizeVar
-	local imgSize partSize needSize i
+	local imgSize partSize needSize hasImageSize i
 	local -a btVols
 	local sizePattern='^[0-9]+(\.[0-9]+)?G$'
 
@@ -4925,37 +4988,29 @@ preflight_check_conf () {
 		done
 
 		_var="${key}DeployType"; deployType="${!_var}"
-		case "$deployType" in
-		GENERIC )
-			for suffix in AppPath NewImageVolSize; do
+		if [ -z "$deployType" ]; then
+			:  # already reported as not set above
+		elif deploy_type_facts "$deployType"; then
+			hasImageSize=0
+			for suffix in "${deployNeeds[@]}"; do
 				_var="${key}${suffix}"
 				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
+				[ "$suffix" = "NewImageVolSize" ] && hasImageSize=1
 			done
-			# The partition has to hold the image. A size that isn't a plain number
-			# of G (22000M) isn't judged.
-			_var="${key}NewImageVolSize"; imgSize="${!_var}"
-			_var="${key}VolSize"; partSize="${!_var}"
-			if [[ "$imgSize" =~ $sizePattern ]] && [[ "$partSize" =~ $sizePattern ]]; then
-				needSize="$(conf_partition_needed "$imgSize")"
-				awk -v have="${partSize%G}" -v need="$needSize" 'BEGIN { exit !(have + 0 >= need + 0) }' ||
-					confProblems+="  ${key}VolSize is ${partSize}, too small for the ${imgSize} image (needs at least ${needSize}G)\n"
+			# A type that has an image size also has to fit that image in its
+			# partition. A size that isn't a plain number of G (22000M) isn't judged.
+			if [ "$hasImageSize" = "1" ]; then
+				_var="${key}NewImageVolSize"; imgSize="${!_var}"
+				_var="${key}VolSize"; partSize="${!_var}"
+				if [[ "$imgSize" =~ $sizePattern ]] && [[ "$partSize" =~ $sizePattern ]]; then
+					needSize="$(conf_partition_needed "$imgSize")"
+					awk -v have="${partSize%G}" -v need="$needSize" 'BEGIN { exit !(have + 0 >= need + 0) }' ||
+						confProblems+="  ${key}VolSize is ${partSize}, too small for the ${imgSize} image (needs at least ${needSize}G)\n"
+				fi
 			fi
-			;;
-		INST-A | ASD-EFI | COPY )
-			_var="${key}VolName"
-			[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
-			;;
-		AXD-PKG )
-			for suffix in VolName PkgName PkgTgtVolName; do
-				_var="${key}${suffix}"
-				[ -z "${!_var}" ] && confProblems+="  ${_var} is not set\n"
-			done
-			;;
-		"" ) ;;  # already reported as not set above
-		* )
+		else
 			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)\n"
-			;;
-		esac
+		fi
 
 		linkVar="${key}DownloadURL"; sizeVar="${key}DownloadBytes"
 		if [ -n "${!linkVar}" ] || [ -n "${!sizeVar}" ]; then
