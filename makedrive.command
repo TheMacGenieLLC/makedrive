@@ -335,6 +335,35 @@ add_offer_app_removal () {
 
 
 # ------------------------------------------------------------------------------
+# read_diagnostics_build
+# Prints the build a mounted diagnostics image says it is: the ProductBuildVersion
+# in the version.plist of its diagnostics bundle. The AXD images keep it in the app
+# at the root of the volume (3X104 to 3X109) or in the .acm bundle under
+# .diagnostics (3X111). AXD 3X106 and 3X107 have the same volume name, so this is
+# what the conf's BuildNumber is compared with to tell their images apart. It is
+# the same in the app, the .acm bundles and the package payload, which
+# CFBundleVersion is not (the app says "3X106 3.2.1.2", the bundle just "3X106").
+# Prints nothing if the image has no such file, or none with a build in it.
+#
+# $1 - Mount point of the image
+# ------------------------------------------------------------------------------
+read_diagnostics_build () {
+
+	local versionFile build=""
+
+	for versionFile in "$1"/*.app/Contents/version.plist \
+	                   "$1"/System/Library/CoreServices/.diagnostics/*.acm/Contents/version.plist; do
+		[ -f "$versionFile" ] || continue
+		build=$(plutil -extract "ProductBuildVersion" raw -o - "$versionFile" 2>/dev/null)
+		[ -n "$build" ] && break
+	done
+
+	printf '%s' "$build"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # add_copy_single_dmg
 # Processes a given single disk image and copies it into its proper location
 # inside of the restorekit folder.
@@ -342,8 +371,11 @@ add_offer_app_removal () {
 # $1 - Display name string for chosen disk image
 # $2 - Path to designated target image location in restorekit
 # $3 - Correct mounted image name (for comparison to user-provided image)
-# $4 - Build number to search for in the SystemInformation.plist file
-#      (Only needed when copying an OS installer)
+# $4 - Build the image has to say it is. An install DVD or ESD says it in
+#      SystemVersion.plist; any other image says it in the version.plist of its
+#      diagnostics bundle (read_diagnostics_build), so an entry that names a
+#      build for some other kind of image would always be refused. Leave it
+#      empty to accept the image on its volume name alone.
 # $5 - Path to source DMG, if already known (leave empty to prompt the user)
 # $6 - Path to installer application bundle for volume icon (leave empty to skip)
 #
@@ -351,7 +383,7 @@ add_offer_app_removal () {
 # ------------------------------------------------------------------------------
 add_copy_single_dmg () {
 
-	local testDevice testMountPoint mpBase grepReturn dmgBaseDir _pkgExtractedApp=""
+	local testDevice testMountPoint mpBase grepReturn buildNote foundBuild dmgBaseDir _pkgExtractedApp=""
 	local copyResult=1
 
 	disp_print_header
@@ -414,14 +446,26 @@ add_copy_single_dmg () {
 	# mount-point suffix macOS adds on collision is tolerated because the
 	# volume name inside the image is unchanged by it. Ambiguous volume
 	# names (shared by every retail DVD and install ESD of the era) get a
-	# build number check on top of the name.
+	# build number check on top of the name, and so does any other image whose
+	# conf entry names a build, read from its diagnostics bundle (AXD 3X106
+	# and 3X107 share a volume name).
 	mpBase="${testMountPoint##*/}"
 	grepReturn=1
+	buildNote=""
 	case "$mpBase" in
 	"$3"|"$3 "[0-9]* )
 		if [ "$3" = "Mac OS X Install DVD" ] || [ "$3" = "Mac OS X Install ESD" ]; then
 			grep -qF "$4" "$testMountPoint/System/Library/CoreServices/SystemVersion.plist" 2>/dev/null
 			grepReturn=$?
+		elif [ -n "$4" ]; then
+			foundBuild=$(read_diagnostics_build "$testMountPoint")
+			if [ "$foundBuild" = "$4" ]; then
+				grepReturn=0
+			elif [ -n "$foundBuild" ]; then
+				buildNote="It says it is build $foundBuild, and $1 is build $4."
+			else
+				buildNote="It does not say which build it is, and $1 is build $4."
+			fi
 		else
 			grepReturn=0
 		fi
@@ -558,6 +602,7 @@ with open(sys.argv[1], 'r+b') as f:
 		disp_print_header
 		
 		echo "The image does not appear to match $1."
+		[ -n "$buildNote" ] && echo "$buildNote"
 		echo "It may be the wrong image, it may have been modified since it was downloaded,"
 		echo "or it may not be titled the way makedrive expects. Verify your image and try"
 		echo "adding it again."
@@ -3221,10 +3266,11 @@ deploy_restore_and_configure () {
 			disp_pause_for_input
 			return 2
 		fi
-		# These packages were signed with certificates that expired years ago
-		# and were never re-issued, so the install requires -allowUntrusted.
-		# The package renames the target volume itself, so the rename below
-		# starts from the name the package leaves behind.
+		# Only the 3X109 package is signed, and its certificate expired years
+		# ago and was never re-issued; the older ones aren't signed at all. So
+		# the install requires -allowUntrusted. The package renames the target
+		# volume itself, so the rename below starts from the name the package
+		# leaves behind.
 		if ! installer -verbose -allowUntrusted -pkg "$srcMount/$pkgName" -target "/Volumes/$startName"; then
 			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="The package install failed for $displayName."

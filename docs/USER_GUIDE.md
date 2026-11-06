@@ -133,9 +133,10 @@ X. Exit makedrive
 - **1. Add image from local file.** Opens a chooser split between macOS
   installers and diagnostic images, marking each list that still has
   missing images; each list then shows exactly which of its files are
-  missing. Each image is verified (by volume name and, for installers,
-  macOS build number) and copied into the correct place in restorekit,
-  then compressed and scanned for restore. Use this for 10.9 Mavericks
+  missing. Each image is verified (by volume name, plus the macOS build
+  number for installers and the build inside the image for the AXD
+  diagnostics) and copied into the correct place in restorekit, then
+  compressed and scanned for restore. Use this for 10.9 Mavericks
   (which has no Apple-hosted download source) or for any image you already
   have.
 - **2. Download and add installer from Apple.** Fetches the Apple
@@ -182,7 +183,7 @@ makedrive.conf defines:
 - **Image definitions:** one block of variables per image, installers and
   diagnostics alike, keyed by a unique prefix (for example `inst2600u`).
   Each block sets the DMG path, the deploy type, display name, final
-  volume name, partition size and filesystem, the macOS build number to
+  volume name, partition size and filesystem, the build number to
   verify against, and the label shown in the add-image menu. The installers
   Apple still serves from a fixed link (10.7 through 10.12) also carry that
   link and its size, which is where the download menu gets them.
@@ -275,7 +276,7 @@ shown during the copy, and afterward makedrive makes sure the DMG is
 compressed and scanned for restore.
 
 Before copying, makedrive verifies the source against the expected volume
-name and macOS build number so the wrong image can't be added by mistake.
+name and build number so the wrong image can't be added by mistake.
 If a build number is left empty in makedrive.conf, the check is skipped for
 that entry.
 
@@ -483,8 +484,9 @@ Diagnostics (ASD), Apple Server Diagnostics (AXD), and the AST Blank Board
 Serializer for Intel Macs through the 2015 model years. Apple discontinued
 these tools long ago and no longer distributes them, so makedrive expects
 you to supply the disk images from your own archive. Add them through Main
-Menu option 1 under **Diagnostics**; each one is verified by volume name,
-then compressed and scanned for restore.
+Menu option 1 under **Diagnostics**; each one is verified by volume name
+(and the AXD images by the build inside them, since 3X106 and 3X107 share a
+volume name), then compressed and scanned for restore.
 
 Every ASD version is a pair of images: an EFI volume holding the
 firmware-level diagnostic and an OS volume holding the full macOS-based
@@ -499,8 +501,9 @@ needs to be added.
 Most diagnostic volumes restore with `asr` just like installers. The AXD
 3X104 through 3X109 volumes are different: Apple shipped those as
 installer packages, so makedrive runs the package from the source image
-against the target volume, telling the installer to accept the package's
-signing certificate, which expired years ago and was never renewed. The
+against the target volume, telling the installer to accept it whatever its
+signing. Only the 3X109 package is signed, and its certificate expired
+years ago and was never renewed; the older ones aren't signed at all. The
 Blank Board Serializer can't be restored with `asr` at all, so its
 contents are cloned onto the target volume instead.
 

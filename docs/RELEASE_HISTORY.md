@@ -11,8 +11,13 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   Server Diagnostics (AXD), and the AST Blank Board Serializer are back as
   images defined in makedrive.conf, with their own Apple Partition Map
   build type for Intel Macs through the 2015 model years. makedrive
-  installs the AXD packages despite their long-expired signing certificate.
-  USB and SD card restores stay installer only.
+  installs the AXD packages whatever their signing: 3X109's certificate
+  expired long ago, and the older packages aren't signed at all. USB and
+  SD card restores stay installer only.
+- **AXD images are told apart by build:** AXD 3X106 and 3X107 share a
+  volume name, so the name alone can't tell their images apart. Each AXD
+  entry in makedrive.conf now names the build its image says it is, and
+  adding the wrong image is refused, naming the build it reported.
 - **Version sync preserves conf ownership:** an automatic version update
   could leave makedrive.conf owned by root and unreadable, so the next
   launch failed with misleading missing-variable errors. The conf now keeps
