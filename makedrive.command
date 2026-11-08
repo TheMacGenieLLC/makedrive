@@ -11,7 +11,7 @@
 # https://makedrive.com
 #
 # Current script version:
-currentVersion="2026-11-03 - Build 203"
+currentVersion="2026-11-08 - Build 203"
 
 # Global Variable Declarations
 bootDiskID=""

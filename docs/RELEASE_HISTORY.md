@@ -5,7 +5,7 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
-### Build 203 - 2026-11-03
+### Build 203 - 2026-11-08
 
 - **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
   Server Diagnostics (AXD), and the AST Blank Board Serializer are back as
