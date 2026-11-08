@@ -4347,7 +4347,7 @@ main_menu () {
 		echo ""
 		echo -e "\033[1m3. Compress and scan DMGs for restore\033[0m"
 		echo ""
-		echo -e "\033[1m4. Build your install drive\033[0m"
+		echo -e "\033[1m4. Build your drive\033[0m"
 		echo ""
 		echo -e "\033[1m5. Restore image to USB or SD card\033[0m"
 		echo ""

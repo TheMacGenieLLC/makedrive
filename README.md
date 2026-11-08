@@ -65,7 +65,7 @@ Welcome to makedrive's Main Menu.
 1. Add image from local file
 2. Download and add installer from Apple
 3. Compress and scan DMGs for restore
-4. Build your install drive
+4. Build your drive
 5. Restore image to USB or SD card
 6. Configure Pushover notifications
 7. Uninstall makedrive from this Mac

@@ -40,6 +40,9 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   for macOS installers or diagnostic images. Lists with missing images are
   marked with a count, each list names its missing files, and the Main Menu
   shows a short notice instead of the full list.
+- **Main Menu option 4 renamed:** it now reads "Build your drive" instead
+  of "Build your install drive", because the drives it builds can hold
+  diagnostics or just a DataDrive as well as installers.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.

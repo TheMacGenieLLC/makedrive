@@ -123,7 +123,7 @@ Welcome to makedrive's Main Menu.
 1. Add image from local file
 2. Download and add installer from Apple
 3. Compress and scan DMGs for restore
-4. Build your install drive
+4. Build your drive
 5. Restore image to USB or SD card
 6. Configure Pushover notifications
 7. Uninstall makedrive from this Mac
@@ -153,9 +153,8 @@ X. Exit makedrive
   `asr` scan data where it's missing. Images added through options 1 or 2
   are already processed, so this option is mainly for images placed into
   restorekit by hand.
-- **4. Build your install drive.** Erases a chosen target disk and deploys
-  the installers for the build type you select. This is where most time is
-  spent.
+- **4. Build your drive.** Erases a chosen target disk and deploys the
+  images for the build type you select. This is where most time is spent.
 - **5. Restore image to USB or SD card.** Restores a single installer image
   to a USB flash drive, SD card, or other small media in one step. See
   [Restoring to USB or SD Card](#restoring-to-usb-or-sd-card).
