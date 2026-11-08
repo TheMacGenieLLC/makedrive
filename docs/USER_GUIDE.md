@@ -373,6 +373,12 @@ Before it lists anything, makedrive brings makedrive.conf up to date with
 that catalog, so every entry is labeled with the release Apple is offering
 right now and is checked against that same build once it has downloaded.
 
+Apple sometimes posts an extra build of a release for a handful of new Mac
+models, with a higher build number than the general one. That build refuses
+every other Mac, so makedrive leaves it out and offers the general build. The
+catch is that a Mac which needs its own build can't be installed from your
+drive until Apple folds that build into the general release.
+
 Pick the installer you want and hit return. makedrive downloads it
 straight from Apple's servers with a progress bar, then processes it
 through the same pipeline as option 1: the installer is verified and built

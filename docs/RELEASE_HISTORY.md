@@ -53,6 +53,12 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   included, so each download is labeled with and verified against the build
   Apple is serving. If the conf can't be updated, makedrive says so before
   downloading, not after.
+- **Builds made for only a few Macs are skipped:** Apple sometimes posts an
+  extra build of a release for a handful of new Mac models, with a higher
+  build number, and that build refuses every other Mac (macOS 27.2 has two
+  of them). The version check and the download menu now pass those over and
+  stay with the general build. A Mac that needs its own build can't be
+  installed from your drive until Apple folds it into the general release.
 - **Download links live in makedrive.conf:** the fixed Apple links behind the
   10.7 through 10.12 downloads moved from the script into each installer's
   block in makedrive.conf, so a link Apple moves is a conf edit. A conf from

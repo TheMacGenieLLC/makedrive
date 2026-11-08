@@ -1793,7 +1793,9 @@ download_fetch_and_process () {
 # ------------------------------------------------------------------------------
 # catalog_fetch_vars
 # Fetches Apple's software-update catalogs and prints shell-sourceable
-# variable assignments describing the newest installer per macOS generation.
+# variable assignments describing the newest general installer per macOS
+# generation. A build Apple posts for only a few new models is passed over (see
+# the comment above MIN_REACH below).
 # Shared by startup_sync_versions and download_installer_menu, which need the
 # same catalog walk but different outputs:
 #
@@ -1879,6 +1881,37 @@ installer_products = {
     and prod.get("Distributions", {}).get("English")
 }
 
+# How many Macs an installer lets through. The JavaScript in its Distribution
+# file lists them: macOS 11 and later name the Macs they accept in
+# supportedBoardIDs (Intel) and supportedDeviceIDs (Apple silicon and T2), and
+# the 10.13 through 10.15 installers in boardIds. Only those three names are
+# read. The refusal list (nonSupportedModels) is not a count of what they accept,
+# and a list under any other name counts as unreadable, which the choice below
+# deals with. The answer is the number of different quoted IDs across the lists
+# (hardware IDs: about 60 for a general macOS 27 build), or None if none could
+# be read.
+#
+# The scan walks the text with find() instead of one big pattern, so a list that
+# is never closed costs one pass over the text, not one pass per opening. A list
+# written in pieces, or in a style this doesn't know, counts as far as it can be
+# read, which usually makes the build look narrower.
+LIST_HEAD = re.compile(r"(?<![\w.])(?:supportedBoardIDs|supportedDeviceIDs|boardIds)\s{0,40}=\s{0,40}\[")
+QUOTED    = re.compile(r"""['"]([^'"\n]*)['"]""")
+
+def device_reach(text):
+    ids = set()
+    pos = 0
+    while True:
+        head = LIST_HEAD.search(text, pos)
+        if not head:
+            break
+        end = text.find("]", head.end())
+        if end < 0:
+            break
+        ids.update(s for s in QUOTED.findall(text[head.end():end]) if s)
+        pos = end + 1
+    return len(ids) or None
+
 def get_version_build(item):
     pid, prod = item
     data = fetch(prod["Distributions"]["English"], timeout=15)
@@ -1891,7 +1924,8 @@ def get_version_build(item):
     build   = bm.group(1).strip() if bm else ""
     if not version:
         return None
-    return (pid, version, build, prod.get("Packages", []), prod["Distributions"]["English"])
+    return (pid, version, build, prod.get("Packages", []), prod["Distributions"]["English"],
+            device_reach(text))
 
 def parse_ver(v):
     try:
@@ -1910,32 +1944,63 @@ def parse_build(b):
     major, letter, point, suffix = m.groups()
     return (int(major), letter, int(point), suffix)
 
-# Distribution files are fetched concurrently. Keep only the newest version
-# and build for each macOS generation (keyed by major, or "10.x" for the 10
-# line). Versions before 10.13 and the nonexistent 16-25 range (Apple jumped
-# 15 → 26) are dropped as catalog noise; 10.7-10.12 downloads come from
-# the fixed Apple links in makedrive.conf (see download_installer_menu). Multiple
-# products can share the same VERSION string across supplemental updates
-# (e.g. 19H2/19H4/19H15 all "10.15.7"), so build must be compared too;
-# otherwise whichever entry is processed first wins regardless of how
-# outdated it actually is.
-newest = {}
+# Distribution files are fetched concurrently and every release is kept until
+# they have all arrived, because whether a build is offered depends on the other
+# builds of its generation (keyed by major, or "10.x" for the 10 line). The pick
+# is the newest version, then the newest build, among the general builds.
+# Versions before 10.13 and the nonexistent 16-25 range (Apple jumped 15 → 26)
+# are dropped as catalog noise; 10.7-10.12 downloads come from the fixed Apple
+# links in makedrive.conf (see download_installer_menu).
+#
+# Build is compared as well as version because supplemental updates share a
+# VERSION string (19H2/19H4/19H15 are all "10.15.7"). Apple also posts builds for
+# only a few new Macs under the same version, with HIGHER build numbers (macOS
+# 27.2 is 26B123 with 60 hardware IDs, and 26B7124 and 26B8125 with two and four).
+# Their installers refuse every other Mac, and nothing in the catalog entry says
+# so; the list in the Distribution file does. So a build that lists fewer than
+# half as many IDs as the widest in its generation, or fewer than MIN_REACH, is
+# passed over. MIN_REACH is an absolute floor, for a generation with nothing wide
+# to compare against: the shortest list a general release has had is 60, and the
+# narrow ones have had 1 to 4.
+#
+# A build whose list can't be read is passed over too, once any other build of
+# its generation could be read (however short that list is). A change in how
+# Apple writes the list shows up in the newest builds first, and those are the
+# likeliest to be narrow; the build before them is older but works. If nothing in
+# the generation can be read, version and build decide, as they did before any of
+# this. tools/drift-watch says when either happens.
+MIN_REACH = 20
+
+byBucket = {}
 with ThreadPoolExecutor(max_workers=15) as ex:
     for fut in as_completed([ex.submit(get_version_build, item)
                              for item in installer_products.items()]):
         r = fut.result()
         if not r:
             continue
-        pid, version, build, packages, dist_url = r
+        pid, version, build, packages, dist_url, reach = r
+        # a release that could never be printed must not take part in the comparison
+        if not (SAFE_VERSION.match(version) and SAFE_BUILD.match(build)):
+            continue
         p = parse_ver(version)
         if (p[0] == 10 and (len(p) < 2 or p[1] < 13)) or 16 <= p[0] <= 25:
             continue
         bucket = "10." + str(p[1]) if p[0] == 10 and len(p) > 1 else str(p[0])
-        sortKey = (p, parse_build(build))
-        if bucket not in newest or sortKey > newest[bucket]["_sortKey"]:
-            newest[bucket] = {"version": version, "build": build,
-                              "packages": packages, "dist_url": dist_url,
-                              "_sortKey": sortKey}
+        # the product id ends the sort key so that two products with the same version and
+        # build are settled the same way every time, not by which download finished first
+        byBucket.setdefault(bucket, []).append(
+            {"version": version, "build": build, "packages": packages, "dist_url": dist_url,
+             "reach": reach, "_sortKey": (p, parse_build(build), pid)})
+
+newest = {}
+for bucket, group in byBucket.items():
+    widest = max([r["reach"] for r in group if r["reach"] is not None], default=0)
+    bar    = max(MIN_REACH, widest / 2)
+    general = [r for r in group
+               if (r["reach"] is None and widest == 0)
+               or (r["reach"] is not None and r["reach"] >= bar)]
+    if general:
+        newest[bucket] = max(general, key=lambda r: r["_sortKey"])
 
 # Emit newest generation first. The output file is sourced by a root shell
 # and the version, build, and URL strings came from remote catalog data, so
