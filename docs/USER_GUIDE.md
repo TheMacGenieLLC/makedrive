@@ -50,7 +50,7 @@ and lets you re-purpose a drive quickly when a new macOS version ships.
 > a diagnostic and triage tool tied to service provider workflows. The
 > current tool is focused on building macOS install drives, but the classic
 > diagnostic images (ASD, AXD, and the Blank Board Serializer) can still be
-> added from your own archive and built onto a dedicated diagnostics drive.
+> added from your own archive and built onto dedicated diagnostics drives.
 > See [Diagnostic Drives](#diagnostic-drives).
 
 ---
@@ -433,7 +433,8 @@ Main Menu option 4 builds a drive. First choose a build type:
  1. Apple Silicon & Intel Installers
  2. Older PPC & Intel 10.3-10.11 Installers
  3. DataDrive Only
- 4. Intel ASD & AXD Diagnostics
+ 4. Intel ASD & AXD EFI Diagnostics
+ 5. Intel ASD OS Diagnostics
   R. Return to disk build menu
   X. Return to the main menu
 ```
@@ -484,7 +485,7 @@ like to image another disk.
 
 ## Diagnostic Drives
 
-makedrive can build a dedicated diagnostics drive carrying Apple Service
+makedrive can build dedicated diagnostics drives carrying Apple Service
 Diagnostics (ASD), Apple Server Diagnostics (AXD), and the AST Blank Board
 Serializer for Intel Macs through the 2015 model years. Apple discontinued
 these tools long ago and no longer distributes them, so makedrive expects
@@ -495,13 +496,16 @@ volume name), then compressed and scanned for restore.
 
 Every ASD version is a pair of images: an EFI volume holding the
 firmware-level diagnostic and an OS volume holding the full macOS-based
-test suite. The **Intel ASD & AXD Diagnostics** build type lays down every
-pair, the AXD server diagnostics, and the serializer on a single Apple
-Partition Map disk. Every Intel Mac these tools support boots APM media,
-and `asr` has historically been unreliable restoring diagnostic sets onto
-GUID disks with this many volumes. The build expects each image in the
-list to be present in restorekit, and the add image menu shows what still
-needs to be added.
+test suite. Together they would be more than forty volumes on one disk,
+so there are two build types. **Intel ASD & AXD EFI Diagnostics** lays
+down every ASD EFI volume, the AXD server diagnostics, and the serializer,
+about 6 GB plus the DataDrive. **Intel ASD OS Diagnostics** lays down
+every ASD OS volume, about 210 GB plus the DataDrive. Build one drive of
+each for the full set. Both use an Apple Partition Map disk: every Intel
+Mac these tools support boots APM media, and `asr` has historically been
+unreliable restoring diagnostic sets onto GUID disks with this many
+volumes. The build expects each image in the list to be present in
+restorekit, and the add image menu shows what still needs to be added.
 
 Most diagnostic volumes restore with `asr` just like installers. The AXD
 3X104 through 3X109 volumes are different: Apple shipped those as

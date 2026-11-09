@@ -9,11 +9,12 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 - **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
   Server Diagnostics (AXD), and the AST Blank Board Serializer are back as
-  images defined in makedrive.conf, with their own Apple Partition Map
-  build type for Intel Macs through the 2015 model years. makedrive
-  installs the AXD packages whatever their signing: 3X109's certificate
-  expired long ago, and the older packages aren't signed at all. USB and
-  SD card restores stay installer only.
+  images defined in makedrive.conf, with two Apple Partition Map build
+  types for Intel Macs through the 2015 model years: one for the EFI
+  volumes and one for the ASD OS volumes. makedrive installs the AXD
+  packages whatever their signing: 3X109's certificate expired long ago,
+  and the older packages aren't signed at all. USB and SD card restores
+  stay installer only.
 - **AXD images are told apart by build:** AXD 3X106 and 3X107 share a
   volume name, so the name alone can't tell their images apart. Each AXD
   entry in makedrive.conf now names the build its image says it is, and
