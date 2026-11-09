@@ -2257,7 +2257,7 @@ download_installer_menu () {
 # add_menu_main
 # Top level of the image installer: tags each image category with its count
 # of missing images and routes to the installer or diagnostics list, which
-# shows its own missing files.
+# puts an asterisk beside its own missing entries.
 # ------------------------------------------------------------------------------
 add_menu_main () {
 
@@ -2296,14 +2296,12 @@ add_menu_main () {
 		1 )
 			add_menu_image_list "installer" addMenuInstallers[@] \
 				"App Store installers must be in /Applications before they can be added." \
-				missingInstallersList \
 				|| break
 			;;
 
 		2 )
 			add_menu_image_list "diagnostic image" addMenuDiagnostics[@] \
 				"Diagnostic images are supplied from your own archive as single DMG files." \
-				missingDiagnosticsList \
 				|| break
 			;;
 
@@ -2319,21 +2317,21 @@ add_menu_main () {
 # ------------------------------------------------------------------------------
 # add_menu_image_list
 # Lists one category of configured images and dispatches the chosen entry to
-# its AddFunc. Returns 0 when the user goes back to the image type menu and 1
-# when they exit the image installer entirely.
+# its AddFunc. An image that isn't in restorekit has an asterisk in front of
+# its number, and a line under the list says what the asterisk means. Returns
+# 0 when the user goes back to the image type menu and 1 when they exit the
+# image installer entirely.
 #
 # $1 - Category word used in the menu prompt (e.g. "installer")
 # $2 - Name of array variable holding the image keys to list
 # $3 - One-line note printed below the menu
-# $4 - Name of the missing-list global to display above the menu
 # ------------------------------------------------------------------------------
 add_menu_image_list () {
 
 	local categoryWord="$1"
 	local menuKeys=("${!2}")
 	local categoryNote="$3"
-	local missingListVar="${4:-}"
-	local addMenuIdx addMenuLabelVar addMenuKey imageChoice
+	local addMenuIdx addMenuLabelVar addMenuKey addMenuMark addMenuAnyMissing imageChoice
 	local addMenuLabels=()
 
 	if [ "${#menuKeys[@]}" -eq 0 ]; then
@@ -2344,20 +2342,24 @@ add_menu_image_list () {
 		return 0
 	fi
 
-	for (( addMenuIdx = 0 ; addMenuIdx < ${#menuKeys[@]} ; addMenuIdx++ )); do
-		addMenuLabelVar="${menuKeys[$addMenuIdx]}MenuLabel"
-		addMenuLabels+=( "$(printf "%2d. %s" $(( addMenuIdx + 1 )) "${!addMenuLabelVar}")" )
-	done
-
 	while true; do
 
 		disp_print_header
 
-		# Recompute each redraw so the list shrinks as images are added.
-		if [ -n "$missingListVar" ]; then
-			check_file_presence
-			disp_print_missing_images "${!missingListVar}"
-		fi
+		# Worked out on every pass, not once before the loop, so an asterisk
+		# goes away as soon as the image it flags has been added.
+		addMenuLabels=()
+		addMenuAnyMissing=0
+		for (( addMenuIdx = 0 ; addMenuIdx < ${#menuKeys[@]} ; addMenuIdx++ )); do
+			addMenuKey="${menuKeys[$addMenuIdx]}"
+			addMenuLabelVar="${addMenuKey}MenuLabel"
+			addMenuMark=" "
+			if ! check_image_present "$addMenuKey"; then
+				addMenuMark="*"
+				addMenuAnyMissing=1
+			fi
+			addMenuLabels+=( "$(printf "%s%2d. %s" "$addMenuMark" $(( addMenuIdx + 1 )) "${!addMenuLabelVar}")" )
+		done
 
 		echo "Choose the $categoryWord you'd like to add to the restorekit folder:"
 		echo ""
@@ -2365,6 +2367,10 @@ add_menu_image_list () {
 		disp_print_two_column_list addMenuLabels[@]
 
 		echo ""
+		if [ "$addMenuAnyMissing" -eq 1 ]; then
+			echo "* Not present in restorekit"
+			echo ""
+		fi
 		echo " R. Return to the image type menu"
 		echo " X. Exit Image Installer"
 		echo ""
@@ -4007,36 +4013,45 @@ quick_deploy_start () {
 
 
 # ------------------------------------------------------------------------------
+# check_image_present
+# Tells whether one configured image is in restorekit. The counts behind the
+# Main Menu notice and the image type chooser, and the asterisks in the image
+# lists, all come from this, so they can't disagree about what is missing.
+#
+# $1 - The image's conf key (e.g. inst2700a), which names the variable that
+#      holds the path to its file
+# Returns 0 if the file is there, 1 if it is not.
+# ------------------------------------------------------------------------------
+check_image_present () {
+
+	local _presenceKey="$1"
+
+	[ -e "${!_presenceKey}" ]
+
+}
+
+
+# ------------------------------------------------------------------------------
 # check_file_presence
-# Builds per-category lists of configured images missing from restorekit into
-# the missingInstallersList and missingDiagnosticsList globals, with matching
-# counts. The Main Menu prints a short notice when anything is missing, the
-# image type chooser tags each category with its count, and each image list
-# prints its own full list through disp_print_missing_images.
+# Counts the configured images missing from restorekit, per category, into the
+# missingInstallersCount and missingDiagnosticsCount globals. The Main Menu
+# prints a short notice when anything is missing and the image type chooser
+# tags each category with its count; each image list puts an asterisk beside
+# its own missing entries.
 # ------------------------------------------------------------------------------
 check_file_presence () {
 
-	local _presenceKey _presencePath
+	local _presenceKey
 
-	missingInstallersList=""
-	missingDiagnosticsList=""
 	missingInstallersCount=0
 	missingDiagnosticsCount=0
 
 	for _presenceKey in "${addMenuInstallers[@]}"; do
-		_presencePath="${!_presenceKey}"
-		if [ ! -e "$_presencePath" ]; then
-			missingInstallersList+="${_presencePath##*/} \n"
-			missingInstallersCount=$(( missingInstallersCount + 1 ))
-		fi
+		check_image_present "$_presenceKey" || missingInstallersCount=$(( missingInstallersCount + 1 ))
 	done
 
 	for _presenceKey in "${addMenuDiagnostics[@]}"; do
-		_presencePath="${!_presenceKey}"
-		if [ ! -e "$_presencePath" ]; then
-			missingDiagnosticsList+="${_presencePath##*/} \n"
-			missingDiagnosticsCount=$(( missingDiagnosticsCount + 1 ))
-		fi
+		check_image_present "$_presenceKey" || missingDiagnosticsCount=$(( missingDiagnosticsCount + 1 ))
 	done
 
 	return 0
@@ -4045,8 +4060,9 @@ check_file_presence () {
 
 # ------------------------------------------------------------------------------
 # disp_print_missing_images
-# Prints one category's list of images missing from restorekit, as most
-# recently computed by check_file_presence. Prints nothing when it is empty.
+# Prints a list of image file names missing from restorekit, in columns, under
+# a line saying so. Prints nothing when the list is empty. The build check
+# uses it to name the files a build type still needs.
 #
 # $1 - The missing-image list to print
 # ------------------------------------------------------------------------------

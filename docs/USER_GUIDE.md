@@ -106,8 +106,8 @@ session, no matter how many drives you image.
 If a DMG that one of your configurations expects is missing from
 restorekit, a short notice appears above the Main Menu. The add image menu
 (Main Menu option 1) marks each image list that has missing files, and
-choosing a list shows exactly which of its files are missing; add them and
-the notice clears.
+choosing a list puts an asterisk beside each image that is missing; add
+them and the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
 empty one so you can start from scratch and add images from within the
@@ -132,8 +132,8 @@ X. Exit makedrive
 
 - **1. Add image from local file.** Opens a chooser split between macOS
   installers and diagnostic images, marking each list that still has
-  missing images; each list then shows exactly which of its files are
-  missing. Each image is verified (by volume name, plus the macOS build
+  missing images; each list then puts an asterisk beside every image
+  that is missing. Each image is verified (by volume name, plus the macOS build
   number for installers and the build inside the image for the AXD
   diagnostics) and copied into the correct place in restorekit, then
   compressed and scanned for restore. Use this for 10.9 Mavericks
@@ -248,21 +248,27 @@ Choose the type of image you'd like to add to the restorekit folder:
  X. Exit Image Installer
 ```
 
-Choosing macOS installers shows exactly which of its files are missing,
-then lists every installer makedrive knows how to add:
+Choosing macOS installers lists every installer makedrive knows how to add.
+An asterisk in front of a number means that image isn't in restorekit yet,
+and a line under the list says so:
 
 ```
 Choose the installer you'd like to add to the restorekit folder:
 
- 1. 10.3.7 PPC Install          12. 10.13.6 App Store Install
- 2. 10.4.7 PPC Install          13. 10.14.6 App Store Install
- ...
- 9. 10.10.5 App Store Install   20. 26.x App Store Install
-10. 10.11.6 App Store Install   21. 27.x App Store Install
-11. 10.12.6 App Store Install
+  1. 10.3.7 PPC Install           12. 10.13.6 App Store Install
+* 2. 10.4.7 PPC Install           13. 10.14.6 App Store Install
+  ...
+  9. 10.10.5 App Store Install    20. 26.x App Store Install
+ 10. 10.11.6 App Store Install   *21. 27.x App Store Install
+ 11. 10.12.6 App Store Install
+
+* Not present in restorekit
+
  R. Return to the image type menu
  X. Exit Image Installer
 ```
+
+An asterisk goes away as soon as you add that image.
 
 (The exact lists are defined in makedrive.conf and reflect the macOS
 versions and diagnostics you support.)

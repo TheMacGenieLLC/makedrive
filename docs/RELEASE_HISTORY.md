@@ -39,8 +39,8 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   clean error instead of acting on an empty path.
 - **Add image menu reorganized:** Main Menu option 1 now opens a chooser
   for macOS installers or diagnostic images. Lists with missing images are
-  marked with a count, each list names its missing files, and the Main Menu
-  shows a short notice instead of the full list.
+  marked with a count, each list puts an asterisk beside its missing images,
+  and the Main Menu shows a short notice instead of the full list.
 - **Main Menu option 4 renamed:** it now reads "Build your drive" instead
   of "Build your install drive", because the drives it builds can hold
   diagnostics or just a DataDrive as well as installers.
