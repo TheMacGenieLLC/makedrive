@@ -3255,6 +3255,29 @@ deploy_type_facts () {
 
 
 # ------------------------------------------------------------------------------
+# deploy_clone_contents
+# Copies everything on a mounted image onto a mounted target volume, for the
+# images asr can't restore (the Blank Board Serializer, whose volume is FAT).
+# It is rsync, not cp, because cp onto FAT copies the files and then exits 1:
+# FAT has nowhere to keep the source root folder's extended attributes ("unable
+# to copy extended attributes ... Operation not permitted"), which stopped the
+# first real diagnostics build. The three folders macOS keeps at the top of
+# every volume are left behind. Nothing on the drive wants a Spotlight index, a
+# trash folder or an event log, Spotlight is switched off on the volume anyway,
+# and an ordinary user can't create .Spotlight-V100 on FAT at all.
+#
+# $1 - Where the source image is mounted
+# $2 - The target volume's mount point
+# Returns rsync's status.
+# ------------------------------------------------------------------------------
+deploy_clone_contents () {
+
+	rsync -rtW --exclude "/.Spotlight-V100" --exclude "/.Trashes" --exclude "/.fseventsd" "$1/" "$2/"
+
+}
+
+
+# ------------------------------------------------------------------------------
 # deploy_restore_and_configure
 # Restores a disk image onto a prepared target volume, then renames, blesses,
 # disables Spotlight, and unmounts it. Called through deploy_image, by
@@ -3362,7 +3385,7 @@ deploy_restore_and_configure () {
 			disp_pause_for_input
 			return 2
 		fi
-		if ! cp -R "$srcMount/" "/Volumes/$startName/"; then
+		if ! deploy_clone_contents "$srcMount" "/Volumes/$startName"; then
 			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="Cloning $displayName onto the target volume failed."
 			echo ""
