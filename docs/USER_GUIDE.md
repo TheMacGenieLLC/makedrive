@@ -97,17 +97,21 @@ makedrive relies on the **restorekit** folder as its source for the DMG
 files it deploys. restorekit must sit in the **same directory as the
 makedrive script**. The simplest setup is to keep `makedrive.command` and
 `restorekit` together in the Desktop folder of a dedicated imaging account.
-Double-clicking `makedrive.command` then launches it in Terminal.
+Double-clicking `makedrive.command` then launches it in Terminal. Every
+screen is written to fit Terminal's default window, 80 columns wide.
 
 At the start of a session you're prompted for the administrator password.
 Once authenticated, the password isn't requested again for the rest of the
 session, no matter how many drives you image.
 
 If a DMG that one of your configurations expects is missing from
-restorekit, a short notice appears above the Main Menu. The add image menu
-(Main Menu option 1) marks each image list that has missing files, and
-choosing a list puts an asterisk beside each image that is missing; add
-them and the notice clears.
+restorekit, a short notice appears above the Main Menu, saying how many are
+missing of each kind (macOS installers, diagnostic images). Diagnostics are
+optional, so the notice leaves them out until you've added at least one,
+and a setting in [makedrive.conf](#makedriveconf) can leave a kind out for
+good. The add image menu (Main Menu option 1) marks each image list that has
+missing files, and choosing a list puts an asterisk beside each image that
+is missing; add them and the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
 empty one so you can start from scratch and add images from within the
@@ -190,6 +194,22 @@ makedrive.conf defines:
   [Building Install Drives](#building-install-drives)).
 - **Catalog URLs:** the Apple software-update catalog index URLs makedrive
   consults to keep installer build numbers current.
+- **A few settings,** near the top: the DataDrive's name and size, how images
+  are compressed, and which kinds of image the Main Menu notice leaves out
+  (see below).
+
+**Leaving a kind out of the Main Menu notice.** The notice that says how many
+images are missing can be told never to mention a kind. Set
+`missingNoticeIgnoredKinds` near the top of makedrive.conf to the kinds,
+separated by spaces: `Diagnostics`, `Installers`, or both. Diagnostics are
+left out until you add your first one anyway, so this is for someone who keeps
+only a few of them and doesn't want to hear about the rest, or for a Mac that
+only builds diagnostics drives and has no use for the installers. A name that
+isn't one of the kinds stops makedrive at launch with a message, so a typo
+can't quietly do nothing. The add image menus mark what's missing whatever the
+setting says. A conf from before this setting doesn't have the line; add it,
+for example `missingNoticeIgnoredKinds="Diagnostics"`, and the next launch
+uses it.
 
 **Where it lives.** makedrive.conf is stored in the invoking user's home
 directory, at:
@@ -537,8 +557,10 @@ macOS version, or to quickly re-purpose a small drive without going through
 a full build.
 
 Every configured macOS installer appears in the chooser: both **GENERIC**
-(createinstallmedia-based) and **INST-A** (pre-built or legacy) images.
-Diagnostic images don't appear here, since ASD only boots usefully as an
+(createinstallmedia-based) and **INST-A** (pre-built or legacy) images. An
+asterisk in front of a number means that installer isn't in restorekit yet;
+choosing it tells you the image can't be found and takes you back to the
+list. Diagnostic images don't appear here, since ASD only boots usefully as an
 EFI and OS pair; use the diagnostics build type to put those on a drive.
 The same boot-disk protection applies, so makedrive won't let you erase
 the disk you're currently running from.

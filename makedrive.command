@@ -19,6 +19,9 @@ diskNum=""
 diskType=""
 doDrive=""
 executionPath=""
+# The kinds of image restorekit holds, in the order the Main Menu notice names
+# them. image_category_facts says what each one is.
+imageCategories=( Installers Diagnostics )
 imagePathToAdd=""
 imageToAdd=""
 lastBuildError=""
@@ -992,7 +995,8 @@ add_mas_createinstallmedia_impl () {
 	# has to stop the process rather than cascade into misdirected paths.
 	if ! diskutil rename "/Volumes/$endName" "$4"; then
 		echo ""
-		echo "Could not rename the completed installer volume /Volumes/$endName."
+		echo "Could not rename the completed installer volume:"
+		echo "  /Volumes/$endName"
 		echo "It may not have mounted under the expected name. The DMG was not"
 		echo "moved into restorekit."
 		hdiutil detach -force "/Volumes/$endName" 2>/dev/null
@@ -1020,7 +1024,8 @@ add_mas_createinstallmedia_impl () {
 
 	if ! mv "$makedriveInstTmpImageFile" "$5"; then
 		echo ""
-		echo "Could not move the completed DMG to restorekit. Check permissions and disk space."
+		echo "Could not move the completed DMG to restorekit. Check permissions and"
+		echo "disk space."
 		[ "$7" != "mav" ] && hdiutil detach -force "/Volumes/Shared Support" 2>/dev/null
 		echo ""
 		disp_pause_for_input
@@ -1455,7 +1460,8 @@ download_verify_size () {
 	actualBytes=$(stat -f%z "$1" 2>/dev/null)
 	if [ "$actualBytes" != "$2" ]; then
 		echo ""
-		echo "Downloaded file ${1##*/} is ${actualBytes:-0} bytes but should be $2 bytes."
+		echo "Downloaded file ${1##*/} is ${actualBytes:-0} bytes"
+		echo "but should be $2 bytes."
 		echo "The download may have been truncated or altered. Try again."
 		return 1
 	fi
@@ -1666,7 +1672,8 @@ download_fetch_and_process () {
 				if [ "$hfsDlResult" = "130" ]; then
 					echo "Download cancelled."
 				else
-					echo "Download of $_hfsFname failed. Check your network connection and try again."
+					echo "Download of $_hfsFname failed."
+					echo "Check your network connection and try again."
 				fi
 				echo ""
 				rm -rf "$tmpDir"
@@ -2317,10 +2324,10 @@ add_menu_main () {
 # ------------------------------------------------------------------------------
 # add_menu_image_list
 # Lists one category of configured images and dispatches the chosen entry to
-# its AddFunc. An image that isn't in restorekit has an asterisk in front of
-# its number, and a line under the list says what the asterisk means. Returns
-# 0 when the user goes back to the image type menu and 1 when they exit the
-# image installer entirely.
+# its AddFunc. The list marks the images that aren't in restorekit yet (see
+# disp_print_image_list) and is drawn again after every add, so a mark goes
+# away as soon as its image is added. Returns 0 when the user goes back to the
+# image type menu and 1 when they exit the image installer entirely.
 #
 # $1 - Category word used in the menu prompt (e.g. "installer")
 # $2 - Name of array variable holding the image keys to list
@@ -2331,8 +2338,7 @@ add_menu_image_list () {
 	local categoryWord="$1"
 	local menuKeys=("${!2}")
 	local categoryNote="$3"
-	local addMenuIdx addMenuLabelVar addMenuKey addMenuMark addMenuAnyMissing imageChoice
-	local addMenuLabels=()
+	local addMenuIdx addMenuKey imageChoice
 
 	if [ "${#menuKeys[@]}" -eq 0 ]; then
 		disp_print_header
@@ -2346,31 +2352,11 @@ add_menu_image_list () {
 
 		disp_print_header
 
-		# Worked out on every pass, not once before the loop, so an asterisk
-		# goes away as soon as the image it flags has been added.
-		addMenuLabels=()
-		addMenuAnyMissing=0
-		for (( addMenuIdx = 0 ; addMenuIdx < ${#menuKeys[@]} ; addMenuIdx++ )); do
-			addMenuKey="${menuKeys[$addMenuIdx]}"
-			addMenuLabelVar="${addMenuKey}MenuLabel"
-			addMenuMark=" "
-			if ! check_image_present "$addMenuKey"; then
-				addMenuMark="*"
-				addMenuAnyMissing=1
-			fi
-			addMenuLabels+=( "$(printf "%s%2d. %s" "$addMenuMark" $(( addMenuIdx + 1 )) "${!addMenuLabelVar}")" )
-		done
-
 		echo "Choose the $categoryWord you'd like to add to the restorekit folder:"
 		echo ""
 
-		disp_print_two_column_list addMenuLabels[@]
+		disp_print_image_list menuKeys[@] MenuLabel
 
-		echo ""
-		if [ "$addMenuAnyMissing" -eq 1 ]; then
-			echo "* Not present in restorekit"
-			echo ""
-		fi
 		echo " R. Return to the image type menu"
 		echo " X. Exit Image Installer"
 		echo ""
@@ -3325,7 +3311,9 @@ deploy_restore_and_configure () {
 	if ! deploy_type_facts "$deployType"; then
 		lastBuildError="$displayName has a deploy type makedrive does not handle ('$deployType')."
 		disp_print_header
-		echo "$lastBuildError The drive may be incomplete."
+		echo "$displayName"
+		echo "has a deploy type makedrive does not handle ('$deployType')."
+		echo "The drive may be incomplete."
 		echo ""
 		disp_pause_for_input
 		return 2
@@ -3355,7 +3343,8 @@ deploy_restore_and_configure () {
 		if [ -z "$srcDevice" ] || [ -z "$srcMount" ]; then
 			[ -n "$srcDevice" ] && hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="Could not mount the $displayName image."
-			echo "Could not mount the $displayName image. The drive may be incomplete."
+			echo "Could not mount the $displayName image."
+			echo "The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -3369,7 +3358,8 @@ deploy_restore_and_configure () {
 			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="The package install failed for $displayName."
 			echo ""
-			echo "The package install failed for $displayName. The drive may be incomplete."
+			echo "The package install failed for $displayName."
+			echo "The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -3386,7 +3376,8 @@ deploy_restore_and_configure () {
 		if [ -z "$srcDevice" ] || [ -z "$srcMount" ]; then
 			[ -n "$srcDevice" ] && hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="Could not mount the $displayName image."
-			echo "Could not mount the $displayName image. The drive may be incomplete."
+			echo "Could not mount the $displayName image."
+			echo "The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -3395,7 +3386,8 @@ deploy_restore_and_configure () {
 			hdiutil detach -force "$srcDevice" 2>/dev/null
 			lastBuildError="Cloning $displayName onto the target volume failed."
 			echo ""
-			echo "Cloning $displayName onto the target volume failed. The drive may be incomplete."
+			echo "Cloning $displayName onto the target volume failed."
+			echo "The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -3409,7 +3401,8 @@ deploy_restore_and_configure () {
 		if ! asr restore --source "$imagePath" --target "/Volumes/$startName/" --erase --noprompt --noverify; then
 			lastBuildError="asr restore failed for $displayName."
 			echo ""
-			echo "asr restore failed for $displayName. The drive may be incomplete."
+			echo "asr restore failed for $displayName."
+			echo "The drive may be incomplete."
 			echo ""
 			disp_pause_for_input
 			return 2
@@ -3422,7 +3415,9 @@ deploy_restore_and_configure () {
 		# been written to the volume yet, so stop instead of carrying on and
 		# reporting a volume that was never filled.
 		lastBuildError="$displayName has a deploy method ('$deployMethod') makedrive does not handle."
-		echo "$lastBuildError The drive may be incomplete."
+		echo "$displayName"
+		echo "has a deploy method ('$deployMethod') makedrive does not handle."
+		echo "The drive may be incomplete."
 		echo ""
 		disp_pause_for_input
 		return 2
@@ -3439,7 +3434,8 @@ deploy_restore_and_configure () {
 		if ! diskutil rename "/Volumes/$renameSource" "$finalName" && [ "$hadError" = "0" ]; then
 			lastBuildError="Could not rename $renameSource to $finalName."
 			hadError=1
-			echo "Warning: volume rename failed for $renameSource. Drive may not be fully set up."
+			echo "Warning: volume rename failed for $renameSource."
+			echo "The drive may not be fully set up."
 		fi
 	fi
 
@@ -3451,7 +3447,8 @@ deploy_restore_and_configure () {
 	if ! bless -folder "$blessFolder" -label "$finalName"; then
 		[ "$hadError" = "0" ] && lastBuildError="$finalName could not be blessed and may not be bootable."
 		hadError=1
-		echo "Warning: bless failed for $finalName. Volume may not be bootable."
+		echo "Warning: bless failed for $finalName."
+		echo "The volume may not be bootable."
 	fi
 
 	# Some older installers (confirmed 10.9) carry a separate .IABootFiles
@@ -3823,23 +3820,20 @@ build_run_build_task () {
 
 # ------------------------------------------------------------------------------
 # quick_deploy_menu_choose_image
-# Displays available deployment images and returns the selected image key
+# Displays available deployment images and returns the selected image key. The
+# list uses the add lists' short names (MenuLabel), not the full display names,
+# which would run past 80 columns. An image that isn't in restorekit is marked
+# in the list (see disp_print_image_list) but can still be chosen;
+# quick_deploy_start then says it can't be found, before any disk is chosen.
 # ------------------------------------------------------------------------------
 quick_deploy_menu_choose_image () {
 
-	local selectedImageNum selectedIdx selectedImageKey key dispNameVar menuIndex=1
-	local deployableImages=()
-	local menuLabels=()
+	local selectedImageNum selectedIdx selectedImageKey
 
 	# Diagnostic images are excluded: a quick deploy target holds one volume, and
 	# diagnostic sets are only useful as the multi-volume pairs a full
 	# diagnostics build lays down.
-	for key in "${addMenuInstallers[@]}"; do
-		dispNameVar="${key}DispName"
-		menuLabels+=( "$(printf "%2d. %s" "$menuIndex" "${!dispNameVar}")" )
-		deployableImages+=("$key")
-		(( menuIndex++ ))
-	done
+	local deployableImages=( "${addMenuInstallers[@]}" )
 
 	if [ "${#deployableImages[@]}" -eq 0 ]; then
 		disp_print_header
@@ -3856,9 +3850,8 @@ quick_deploy_menu_choose_image () {
 		echo "Choose the image you'd like to restore to a USB or SD card:"
 		echo ""
 
-		disp_print_two_column_list menuLabels[@]
+		disp_print_image_list deployableImages[@] MenuLabel
 
-		echo ""
 		echo " X. Exit to main menu"
 		echo ""
 		echo "Enter the number for the image you'd like to restore and hit return: "
@@ -4013,6 +4006,35 @@ quick_deploy_start () {
 
 
 # ------------------------------------------------------------------------------
+# image_category_facts
+# The one table of the kinds of image restorekit holds (imageCategories lists
+# them, in the order the Main Menu notice names them). It runs nothing. It sets
+#   imageCategoryName     what the Main Menu notice calls the kind
+#   imageCategoryIsExtra  1 for a kind that is optional, 0 for one every drive is
+#                         built from. The notice says nothing about an extra
+#                         until its first image has been added, because someone
+#                         who has none of them hasn't chosen to use them.
+# and returns 1 for a kind it doesn't know. A kind called NAME keeps its image
+# keys in addMenuNAME (conf_derive_menus fills it in) and its count of missing
+# ones in missingNAMECount (check_file_presence works it out). A new kind, such
+# as boot images, needs a row here, a place in imageCategories, a rule in
+# conf_derive_menus for which keys belong to it, and its own choice in the add
+# image type menu.
+#
+# $1 - The kind: Installers or Diagnostics
+# ------------------------------------------------------------------------------
+image_category_facts () {
+
+	case "$1" in
+	Installers )  imageCategoryName="macOS installers";  imageCategoryIsExtra=0 ;;
+	Diagnostics ) imageCategoryName="diagnostic images"; imageCategoryIsExtra=1 ;;
+	* ) return 1 ;;
+	esac
+
+}
+
+
+# ------------------------------------------------------------------------------
 # check_image_present
 # Tells whether one configured image is in restorekit. The counts behind the
 # Main Menu notice and the image type chooser, and the asterisks in the image
@@ -4033,28 +4055,86 @@ check_image_present () {
 
 # ------------------------------------------------------------------------------
 # check_file_presence
-# Counts the configured images missing from restorekit, per category, into the
-# missingInstallersCount and missingDiagnosticsCount globals. The Main Menu
-# prints a short notice when anything is missing and the image type chooser
-# tags each category with its count; each image list puts an asterisk beside
-# its own missing entries.
+# Counts the configured images missing from restorekit, kind by kind (see
+# image_category_facts), into missingInstallersCount and missingDiagnosticsCount
+# (the count for a kind called NAME goes in missingNAMECount). The Main Menu
+# notice and the image type chooser work from these counts; each image list puts
+# an asterisk beside its own missing entries.
 # ------------------------------------------------------------------------------
 check_file_presence () {
 
-	local _presenceKey
+	local _presenceCategory _presenceKeysRef _presenceKey _presenceMissing
 
-	missingInstallersCount=0
-	missingDiagnosticsCount=0
-
-	for _presenceKey in "${addMenuInstallers[@]}"; do
-		check_image_present "$_presenceKey" || missingInstallersCount=$(( missingInstallersCount + 1 ))
-	done
-
-	for _presenceKey in "${addMenuDiagnostics[@]}"; do
-		check_image_present "$_presenceKey" || missingDiagnosticsCount=$(( missingDiagnosticsCount + 1 ))
+	for _presenceCategory in "${imageCategories[@]}"; do
+		_presenceKeysRef="addMenu${_presenceCategory}[@]"
+		_presenceMissing=0
+		for _presenceKey in "${!_presenceKeysRef}"; do
+			check_image_present "$_presenceKey" || _presenceMissing=$(( _presenceMissing + 1 ))
+		done
+		printf -v "missing${_presenceCategory}Count" '%s' "$_presenceMissing"
 	done
 
 	return 0
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_print_missing_notice
+# Prints the box above the Main Menu that says images are missing from restorekit,
+# in five lines however many kinds are missing (the Main Menu is already 23 lines
+# tall, so every line here pushes its top off a small Terminal): one line saying
+# how many of each kind of image (see image_category_facts), and one saying where
+# to go. The kinds are told apart because they aren't equally wanted: every drive
+# is built from macOS installers, but the others are extras, and for an extra the
+# notice says nothing until its first image has been added, since someone who has
+# none of them hasn't chosen to use them. The conf can also switch a kind off for
+# good (missingNoticeIgnoredKinds), for someone who keeps only a few diagnostic
+# images, say, or whose Mac builds only diagnostics drives. Prints nothing when no
+# kind is left to name.
+#
+# Works from the counts check_file_presence has just worked out.
+# ------------------------------------------------------------------------------
+disp_print_missing_notice () {
+
+	local noticeCategory noticeKeysRef noticeCountVar noticeMissing noticeTotal
+	local noticeWord noticeIgnored
+	local noticeKeys=()
+	local noticeSummary=""
+
+	for noticeCategory in "${imageCategories[@]}"; do
+		image_category_facts "$noticeCategory" || continue
+
+		# A kind the conf says to ignore is never named.
+		noticeIgnored=0
+		# shellcheck disable=SC2086  # the setting is a list of words, split on purpose
+		for noticeWord in $missingNoticeIgnoredKinds; do
+			[ "$noticeWord" = "$noticeCategory" ] && noticeIgnored=1
+		done
+		[ "$noticeIgnored" -eq 0 ] || continue
+
+		noticeCountVar="missing${noticeCategory}Count"
+		noticeMissing="${!noticeCountVar:-0}"
+		[ "$noticeMissing" -gt 0 ] || continue
+
+		# An extra with none of its images there hasn't been taken up.
+		noticeKeysRef="addMenu${noticeCategory}[@]"
+		noticeKeys=( "${!noticeKeysRef}" )
+		noticeTotal=${#noticeKeys[@]}
+		if [ "$imageCategoryIsExtra" -eq 1 ] && [ "$noticeMissing" -ge "$noticeTotal" ]; then
+			continue
+		fi
+
+		noticeSummary+="${noticeSummary:+, }${imageCategoryName} (${noticeMissing})"
+	done
+
+	[ -n "$noticeSummary" ] || return 0
+
+	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+	echo "Missing from restorekit: ${noticeSummary}."
+	echo "Choose option 1 to see what's missing and add images."
+	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+	echo ""
+
 }
 
 
@@ -4350,6 +4430,91 @@ disp_print_two_column_list () {
 
 
 # ------------------------------------------------------------------------------
+# disp_print_image_list
+# Prints a numbered list of images in two columns, with an asterisk in front of
+# the number of every image that isn't in restorekit (and a space in front of the
+# rest, so the numbers line up), then a line saying what the asterisk means if
+# any image got one. The add image lists and the quick restore list both draw
+# this way. Which images are missing is worked out on every call, so a list
+# drawn again after an image has been added no longer marks it.
+#
+# $1 - Array variable holding the image keys to list, passed by name (e.g.
+#      myKeys[@]); the number shown is the key's place in it
+# $2 - Ending of the name of the conf variable that holds each key's label
+#      (MenuLabel for the add lists, DispName for the quick restore list)
+# ------------------------------------------------------------------------------
+disp_print_image_list () {
+
+	local listKeys=("${!1}")
+	local listLabelEnding="$2"
+	local listIdx listKey listLabelVar listMark listAnyMissing=0
+	local listLabels=()
+
+	for (( listIdx = 0 ; listIdx < ${#listKeys[@]} ; listIdx++ )); do
+		listKey="${listKeys[$listIdx]}"
+		listLabelVar="${listKey}${listLabelEnding}"
+		listMark=" "
+		if ! check_image_present "$listKey"; then
+			listMark="*"
+			listAnyMissing=1
+		fi
+		listLabels+=( "$(printf "%s%2d. %s" "$listMark" $(( listIdx + 1 )) "${!listLabelVar}")" )
+	done
+
+	disp_print_two_column_list listLabels[@]
+
+	echo ""
+	if [ "$listAnyMissing" -eq 1 ]; then
+		echo "* Not present in restorekit"
+		echo ""
+	fi
+
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_print_item_list
+# Prints a list of items as lines no wider than 80 columns, as many items to a
+# line as fit, breaking only between items so that a name is never split. The
+# items come in one string separated by ", " and the list ends with a full stop.
+# For a list whose length isn't ours to choose, such as the releases a conf
+# update has just changed, which can be one or half a dozen.
+#
+# $1 - The items, separated by ", "
+# $2 - What to print in front of every line (e.g. two spaces)
+# ------------------------------------------------------------------------------
+disp_print_item_list () {
+
+	local rest="$1" indent="$2"
+	local item line=""
+
+	while [ -n "$rest" ]; do
+		item="${rest%%, *}"
+		if [ "$item" = "$rest" ]; then
+			rest=""
+		else
+			rest="${rest#*, }"
+		fi
+
+		if [ -z "$line" ]; then
+			line="${indent}${item}"
+		elif [ $(( ${#line} + 2 + ${#item} + 1 )) -le 80 ]; then
+			# (the 1 is the comma or full stop that has to follow)
+			line="${line}, ${item}"
+		else
+			echo "${line},"
+			line="${indent}${item}"
+		fi
+	done
+
+	[ -n "$line" ] && echo "${line}."
+
+	return 0
+
+}
+
+
+# ------------------------------------------------------------------------------
 # main_menu
 # Asks which track you'd like to take in the program.  Gives more flexibility
 # for adding new features without having to modify as much throughout the rest
@@ -4361,19 +4526,11 @@ main_menu () {
 		disp_print_header
 		
 		check_file_presence
-
-		if [ "$(( missingInstallersCount + missingDiagnosticsCount ))" -gt 0 ]; then
-			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-			echo ""
-			echo "One or more images your configuration expects are missing from restorekit."
-			echo "Choose option 1 to see what's missing and add images."
-			echo ""
-			echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-			echo ""
-		fi
+		disp_print_missing_notice
 
 		if [ -n "$makeDriveSyncNotice" ]; then
-			echo "makedrive.conf updated for newer macOS releases: ${makeDriveSyncNotice}."
+			echo "makedrive.conf updated for newer macOS releases:"
+			disp_print_item_list "$makeDriveSyncNotice" "  "
 			echo "Obtain the matching installer before adding it to the restorekit."
 			echo ""
 		fi
@@ -5009,7 +5166,8 @@ migrate_conf_file () {
 		archivedFile="${archiveDir}/makedrive.conf_archived_${timestamp}"
 
 		if ! cp "$targetConf" "$archivedFile"; then
-			echo "Warning: Could not archive existing conf file to $archivedFile"
+			echo "Warning: Could not archive existing conf file to:"
+			echo "  $archivedFile"
 			return 1
 		fi
 	fi
@@ -5155,11 +5313,11 @@ preflight_check_conf () {
 				if [[ "$imgSize" =~ $sizePattern ]] && [[ "$partSize" =~ $sizePattern ]]; then
 					needSize="$(conf_partition_needed "$imgSize")"
 					awk -v have="${partSize%G}" -v need="$needSize" 'BEGIN { exit !(have + 0 >= need + 0) }' ||
-						confProblems+="  ${key}VolSize is ${partSize}, too small for the ${imgSize} image (needs at least ${needSize}G)\n"
+						confProblems+="  ${key}VolSize is ${partSize}, too small for the ${imgSize} image\n    (needs at least ${needSize}G)\n"
 				fi
 			fi
 		else
-			confProblems+="  ${key}DeployType is '${deployType}' (must be GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)\n"
+			confProblems+="  ${key}DeployType is '${deployType}'\n    (must be GENERIC, INST-A, ASD-EFI, AXD-PKG, or COPY)\n"
 		fi
 
 		linkVar="${key}DownloadURL"; sizeVar="${key}DownloadBytes"
@@ -5193,7 +5351,7 @@ preflight_check_conf () {
 	for key in "${addMenuOrder[@]}"; do
 		add_func_resolve "$key" && continue
 		_var="${key}AddFunc"
-		confProblems+="  ${_var} is '${!_var}' (must be COPY_SINGLE, CREATE_INSTALL_MEDIA, or CREATE_INSTALL_MEDIA_MAV)\n"
+		confProblems+="  ${_var} is '${!_var}'\n    (must be COPY_SINGLE, CREATE_INSTALL_MEDIA, or CREATE_INSTALL_MEDIA_MAV)\n"
 	done
 
 	# The dataDrive pseudo-key feeds the same partition string.
@@ -5208,6 +5366,15 @@ preflight_check_conf () {
 		fi
 	done
 
+	# missingNoticeIgnoredKinds names kinds of image (image_category_facts). A
+	# misspelt one would be ignored without a word, and the notice would go on
+	# naming the kind the person meant to silence.
+	# shellcheck disable=SC2086  # the setting is a list of words, split on purpose
+	for val in $missingNoticeIgnoredKinds; do
+		image_category_facts "$val" && continue
+		confProblems+="  missingNoticeIgnoredKinds has '${val}', which is not a kind of image\n    (use ${imageCategories[*]})\n"
+	done
+
 	# build_deploy_volume stops at dataDrive, so a volume listed after it would
 	# be partitioned and then never restored.
 	for btNum in "${buildTypeNums[@]}"; do
@@ -5215,7 +5382,7 @@ preflight_check_conf () {
 		btVols=( "${!volsRef}" )
 		for (( i = 0; i < ${#btVols[@]} - 1; i++ )); do
 			[ "${btVols[$i]}" = "dataDrive" ] || continue
-			confProblems+="  buildType${btNum}_volumes lists dataDrive before other volumes (they would never be deployed)\n"
+			confProblems+="  buildType${btNum}_volumes lists dataDrive before other volumes\n    (they would never be deployed)\n"
 			break
 		done
 	done

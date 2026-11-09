@@ -39,8 +39,22 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   clean error instead of acting on an empty path.
 - **Add image menu reorganized:** Main Menu option 1 now opens a chooser
   for macOS installers or diagnostic images. Lists with missing images are
-  marked with a count, each list puts an asterisk beside its missing images,
-  and the Main Menu shows a short notice instead of the full list.
+  marked with a count, and each list puts an asterisk beside its missing
+  images. The Main Menu shows a short notice instead of the full list,
+  counting what is missing of each kind, and leaves diagnostics out until
+  you've added one, since they are optional. Main Menu option 5 marks
+  missing installers the same way.
+- **The Main Menu notice can leave a kind out for good:** the new setting
+  `missingNoticeIgnoredKinds` in makedrive.conf names the kinds of image
+  (Installers, Diagnostics) the notice never mentions, for someone who keeps
+  only a few diagnostic images or has no use for the installers. A name that
+  isn't a kind is refused at launch.
+- **Every screen fits an 80 column Terminal window:** the quick restore list
+  uses the add lists' shorter names, the notice about newer releases breaks
+  between releases instead of wrapping inside a name, and the longer messages
+  in the add, build, download and launch checks are broken into lines that fit. A
+  test now measures each screen, and the longest line every message can
+  print.
 - **Main Menu option 4 renamed:** it now reads "Build your drive" instead
   of "Build your install drive", because the drives it builds can hold
   diagnostics or just a DataDrive as well as installers.
