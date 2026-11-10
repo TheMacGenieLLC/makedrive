@@ -1,7 +1,7 @@
 # makedrive User Guide
 
-**Version:** Build 201  
-**Updated:** 2026-06-30  
+**Version:** Build 203  
+**Updated:** 2026-11-10  
 **Author:** Ian Williams  
 **Contact:** [ian@themacgenie.com](mailto:ian@themacgenie.com)  
 **Project:** [https://makedrive.com](https://makedrive.com)
@@ -17,15 +17,16 @@
 - [makedrive.conf](#makedriveconf)
 - [Adding Images to restorekit](#adding-images-to-restorekit)
 - [Mac App Store Installers](#mac-app-store-installers)
-- [Downloading Installers from Apple](#downloading-installers-from-apple)
+- [Downloading and Adding Installers from Apple](#downloading-and-adding-installers-from-apple)
 - [Volume Icons](#volume-icons)
 - [Building Install Drives](#building-install-drives)
+- [Diagnostic Drives](#diagnostic-drives)
 - [Restoring to USB or SD Card](#restoring-to-usb-or-sd-card)
 - [Lion, Mountain Lion, and Mavericks Pre-flight](#lion-mountain-lion-and-mavericks-pre-flight)
 - [Pushover Notifications](#pushover-notifications)
 - [Uninstalling makedrive](#uninstalling-makedrive)
 - [Security Considerations](#security-considerations)
-- [Changelog](#changelog)
+- [Release History](#release-history)
 - [Acknowledgements](#acknowledgements)
 
 ---
@@ -46,9 +47,11 @@ is tedious and error-prone. makedrive makes it consistent and repeatable,
 and lets you re-purpose a drive quickly when a new macOS version ships.
 
 > **Note for users of older makedrive releases:** makedrive was historically
-> a diagnostic and triage tool tied to service provider workflows. Those
-> diagnostic features have been removed, and the current tool is focused on
-> building macOS install drives.
+> a diagnostic and triage tool tied to service provider workflows. The
+> current tool is focused on building macOS install drives, but the classic
+> diagnostic images (ASD, AXD, and the Blank Board Serializer) can still be
+> added from your own archive and built onto dedicated diagnostics drives.
+> See [Diagnostic Drives](#diagnostic-drives).
 
 ---
 
@@ -65,11 +68,11 @@ and lets you re-purpose a drive quickly when a new macOS version ships.
   launch and then exits so installation can complete.
 - **Pillow (PIL), a Python imaging library.** Used to build the legacy
   `it32`/`t8mk` icon format that pre-2013 EFI boot pickers need. Pillow
-  isn't part of macOS or the Xcode Command Line Tools, so makedrive
-  installs it automatically via `pip` the first time it's needed. If that
-  installation fails (for example, on a host with no network access),
-  makedrive continues normally. Icons are still applied to volumes, but
-  they may not appear in the boot picker on older Macs.
+  isn't part of macOS or the Xcode Command Line Tools, so the first time
+  it's needed makedrive explains what it's for and offers to install it
+  via `pip`. If you decline, makedrive remembers your answer and continues
+  normally. Icons are still applied to volumes either way, but without
+  Pillow they may not appear in the boot picker on older Macs.
 - A **local administrator account.** makedrive uses
   command-line tools that require root access by way of `sudo`, so full
   administrator rights on the host are required.
@@ -94,15 +97,23 @@ makedrive relies on the **restorekit** folder as its source for the DMG
 files it deploys. restorekit must sit in the **same directory as the
 makedrive script**. The simplest setup is to keep `makedrive.command` and
 `restorekit` together in the Desktop folder of a dedicated imaging account.
-Double-clicking `makedrive.command` then launches it in Terminal.
+Double-clicking `makedrive.command` then launches it in Terminal. Every
+screen is written to fit Terminal's default window, 80 columns wide.
 
 At the start of a session you're prompted for the administrator password.
 Once authenticated, the password isn't requested again for the rest of the
 session, no matter how many drives you image.
 
 If a DMG that one of your configurations expects is missing from
-restorekit, a notice listing the missing files appears above the Main Menu.
-Add the missing installers (Main Menu option 1) and the notice clears.
+restorekit, a short notice appears above the Main Menu, saying how many are
+missing of each kind (macOS installers, diagnostic images). Diagnostics are
+optional, so the notice leaves them out until you've added at least one,
+and a setting in [makedrive.conf](#makedriveconf) can leave a kind out for
+good. The notice doesn't say which option to choose, because every list you
+add an image from (Main Menu options 1 and 2), and the list for restoring to a
+USB or SD card (option 5), puts an asterisk in front of each image that is
+missing. The add image menu (option 1) also tags each kind that has some
+missing; add them and the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
 empty one so you can start from scratch and add images from within the
@@ -115,35 +126,41 @@ script.
 ```
 Welcome to makedrive's Main Menu.
 
-1. Add installer from local file
-2. Download installer from Apple
+1. Add image from local file
+2. Download and add installer from Apple
 3. Compress and scan DMGs for restore
-4. Build your install drive
+4. Build your drive
 5. Restore image to USB or SD card
 6. Configure Pushover notifications
 7. Uninstall makedrive from this Mac
 X. Exit makedrive
 ```
 
-- **1. Add installer from local file.** Verifies an installer (by volume
-  name and macOS build number) and copies it into the correct place in
-  restorekit, then compresses and scans it for restore. Use this for 10.9
-  Mavericks (which has no Apple-hosted download source) or for any
-  installer you already have.
-- **2. Download installer from Apple.** Fetches the Apple software-update
-  catalog, lists all available macOS installers (10.7 through current,
-  except 10.9), and downloads the one you choose directly from Apple. The
-  installer is processed through the same pipeline as option 1, and the
-  temporary download is cleaned up automatically. 10.9 Mavericks isn't
-  available from Apple and must be added through option 1.
+- **1. Add image from local file.** Opens a chooser split between macOS
+  installers and diagnostic images, marking each list that still has
+  missing images; each list then puts an asterisk beside every image
+  that is missing. Each image is verified (by volume name, plus the macOS build
+  number for installers and the build inside the image for the AXD
+  diagnostics) and copied into the correct place in restorekit, then
+  compressed and scanned for restore. Use this for 10.9 Mavericks
+  (which has no Apple-hosted download source) or for any image you already
+  have.
+- **2. Download and add installer from Apple.** Fetches the Apple
+  software-update catalog, lists all available macOS installers (10.7
+  through current, except 10.9), and downloads the one you choose
+  directly from Apple. Once downloaded, it's processed through the same
+  pipeline as option 1 automatically, with no separate step to trigger:
+  verified, built into an image, placed in restorekit, and then compressed
+  and scanned, ready to use. The temporary download is cleaned up
+  automatically. 10.9 Mavericks isn't available from Apple and must be
+  added through option 1.
 - **3. Compress and scan DMGs for restore.** Explicitly checks the DMGs in
   restorekit, compressing any that aren't already compressed and adding
   `asr` scan data where it's missing. Images added through options 1 or 2
   are already processed, so this option is mainly for images placed into
   restorekit by hand.
-- **4. Build your install drive.** Erases a chosen target disk and deploys
-  the installers for the build type you select. This is where most time is
-  spent.
+- **4. Build your drive.** Erases a chosen target disk and deploys the
+  images for the build type you select. This is where most time is spent.
 - **5. Restore image to USB or SD card.** Restores a single installer image
   to a USB flash drive, SD card, or other small media in one step. See
   [Restoring to USB or SD Card](#restoring-to-usb-or-sd-card).
@@ -168,15 +185,33 @@ without touching the script.
 
 makedrive.conf defines:
 
-- **Image definitions:** one block of variables per installer, keyed by a
-  unique prefix (for example `inst2600u`). Each block sets the DMG path,
-  the deploy type, display name, final volume name, partition size and
-  filesystem, the macOS build number to verify against, and the label shown
-  in the add-image menu.
+- **Image definitions:** one block of variables per image, installers and
+  diagnostics alike, keyed by a unique prefix (for example `inst2600u`).
+  Each block sets the DMG path, the deploy type, display name, final
+  volume name, partition size and filesystem, the build number to
+  verify against, and the label shown in the add-image menu. The installers
+  Apple still serves from a fixed link (10.7 through 10.12) also carry that
+  link and its size, which is where the download menu gets them.
 - **Build types:** the groupings offered when you build a drive (see
   [Building Install Drives](#building-install-drives)).
 - **Catalog URLs:** the Apple software-update catalog index URLs makedrive
   consults to keep installer build numbers current.
+- **A few settings,** near the top: the DataDrive's name and size, how images
+  are compressed, and which kinds of image the Main Menu notice leaves out
+  (see below).
+
+**Leaving a kind out of the Main Menu notice.** The notice that says how many
+images are missing can be told never to mention a kind. Set
+`missingNoticeIgnoredKinds` near the top of makedrive.conf to the kinds,
+separated by spaces: `Diagnostics`, `Installers`, or both. Diagnostics are
+left out until you add your first one anyway, so this is for someone who keeps
+only a few of them and doesn't want to hear about the rest, or for a Mac that
+only builds diagnostics drives and has no use for the installers. A name that
+isn't one of the kinds stops makedrive at launch with a message, so a typo
+can't quietly do nothing. The add image menus mark what's missing whatever the
+setting says. A conf from before this setting doesn't have the line; add it,
+for example `missingNoticeIgnoredKinds="Diagnostics"`, and the next launch
+uses it.
 
 **Where it lives.** makedrive.conf is stored in the invoking user's home
 directory, at:
@@ -209,25 +244,56 @@ version you track, makedrive updates the build number (and the version
 shown in menus and volume names) in makedrive.conf automatically, and notes
 the change above the Main Menu.
 
+makedrive always builds the newest release Apple offers, and it only counts
+an image that matches the release in makedrive.conf. When a point release
+arrives (26.7 becoming 26.7.1, say), the file makedrive expects is renamed
+to match, so the older image is no longer used and the new one shows up as
+missing until you add it. The older image stays in restorekit until you
+delete it, which you can do whenever you like to reclaim the space.
+
 ---
 
 ## Adding Images to restorekit
 
 makedrive adds images into restorekit from within the script, which is
 strongly preferred over arranging the folder by hand. From the Main Menu
-choose option 1 to see the list of installers makedrive knows how to add:
+choose option 1. The screen that opens asks which kind of image you're
+adding, marking any list that still has missing images:
 
 ```
-Choose the software you'd like to add to the restorekit folder:
+Choose the type of image you'd like to add to the restorekit folder:
 
- 1. 10.3.7 PPC Install                   12. 26.x App Store Install
- 2. 10.4.7 PPC Install                   13. 27.x App Store Install
- ...
+ 1. macOS installers (2 missing)
+
+ 2. Diagnostics (ASD, AXD, and the Blank Board Serializer)
+
  X. Exit Image Installer
 ```
 
-(The exact list is defined in makedrive.conf and reflects the macOS
-versions you support.)
+Choosing macOS installers lists every installer makedrive knows how to add.
+An asterisk in front of a number means that image isn't in restorekit yet,
+and a line under the list says so:
+
+```
+Choose the installer you'd like to add to the restorekit folder:
+
+  1. 10.3.7 PPC Install           12. 10.13.6 App Store Install
+* 2. 10.4.7 PPC Install           13. 10.14.6 App Store Install
+  ...
+  9. 10.10.5 App Store Install    20. 26.x App Store Install
+ 10. 10.11.6 App Store Install   *21. 27.x App Store Install
+ 11. 10.12.6 App Store Install
+
+* Not present in restorekit
+
+ R. Return to the image type menu
+ X. Exit Image Installer
+```
+
+An asterisk goes away as soon as you add that image.
+
+(The exact lists are defined in makedrive.conf and reflect the macOS
+versions and diagnostics you support.)
 
 Depending on the image, makedrive either processes an App Store installer
 already in `/Applications` (see
@@ -237,7 +303,7 @@ shown during the copy, and afterward makedrive makes sure the DMG is
 compressed and scanned for restore.
 
 Before copying, makedrive verifies the source against the expected volume
-name and macOS build number so the wrong image can't be added by mistake.
+name and build number so the wrong image can't be added by mistake.
 If a build number is left empty in makedrive.conf, the check is skipped for
 that entry.
 
@@ -252,7 +318,8 @@ for you:
 
 1. Download or place the macOS installer app into `/Applications`. If it
    launches automatically, quit it.
-2. In makedrive (option 1), choose the matching installer entry.
+2. In makedrive, choose Main Menu option 1, then **macOS installers**, and
+   pick the matching installer entry.
 3. makedrive runs `createinstallmedia`, builds the final DMG, applies the
    volume icon, and copies the result into restorekit.
 
@@ -270,7 +337,16 @@ Apple-provided `.pkg` file or the `.dmg` containing it. If a `.dmg` is
 provided, makedrive mounts it, locates the package automatically, and
 unmounts it when finished. makedrive assembles the installer app from the
 package and continues as normal. The package's obsolete installation
-scripts, which fail on current systems, are bypassed entirely.
+scripts, which fail on current systems, are bypassed entirely. Once the
+add has finished, makedrive asks whether to delete the installer app it
+assembled in `/Applications`, the same question option 2 asks after a
+download. If the add failed because the package was the wrong one, answer
+Y so makedrive asks for the package again next time.
+
+Mavericks (10.9) uses the same flat-package layout, and while Apple never
+published a package for it, makedrive accepts one from your own archive
+the same way when the installer app isn't in `/Applications`. It goes
+through the same version check and build verification as the others.
 
 Supply only the genuine Apple-provided package. makedrive checks the
 package's macOS version before assembling it and verifies the exact build
@@ -278,8 +354,9 @@ afterward, but it runs as the administrator and builds an installer from
 whatever package you provide, so the package's authenticity is your
 responsibility.
 
-Two deploy types are supported, both handled automatically based on the
-entry's configuration:
+Installers use one of two deploy types, both handled automatically based
+on the entry's configuration (diagnostic images have their own, covered
+under [Diagnostic Drives](#diagnostic-drives)):
 
 - **GENERIC:** a Mac App Store installer processed with
   `createinstallmedia`. Mojave and later use one flag set, Mavericks
@@ -290,39 +367,74 @@ entry's configuration:
 
 ---
 
-## Downloading Installers from Apple
+## Downloading and Adding Installers from Apple
 
-Main Menu option 2 fetches a macOS installer directly from Apple, so you
-don't need to visit the App Store first or already have anything sitting
-in `/Applications`. It's the fastest way to add an installer to restorekit
-if you don't already have one on hand.
+Main Menu option 2 fetches a macOS installer directly from Apple and adds
+it to restorekit in the same step, so you don't need to visit the App
+Store first, already have anything sitting in `/Applications`, or trigger
+a separate add afterward. It's the fastest way to get an installer into
+restorekit if you don't already have one on hand.
 
 When you choose option 2, makedrive fetches Apple's software-update
 catalog and lists every macOS installer it found, from 10.7 Lion through
 the current release, along with its download size:
 
 ```
-Choose a macOS installer to download from Apple:
+Choose a macOS installer to download and add to restorekit:
 
   10.9 Mavericks is not available from Apple - add it manually via option 1.
 
-  1. 10.15.7 App Store Install                    9.8 GB
-  2. 26.x App Store Install                        14.2 GB
+* 1. 27.x App Store Install                        16.6 GB
+  2. 26.x App Store Install                        17.1 GB
   ...
+
+* Not present in restorekit
 
   X. Return to Main Menu
 
-Enter a number to download, or X to return:
+Enter a number to download and add, or X to return:
 ```
 
 (The exact list, order, and sizes reflect what's currently available from
 Apple and the macOS versions defined in makedrive.conf.)
 
+An asterisk in front of a number means that installer isn't in restorekit yet,
+so what is left to download is easy to see. It goes away as soon as the
+download has finished.
+
+Before it lists anything, makedrive brings makedrive.conf up to date with
+that catalog, so every entry is labeled with the release Apple is offering
+right now and is checked against that same build once it has downloaded.
+
+Apple sometimes posts an extra build of a release for a handful of new Mac
+models, with a higher build number than the general one. That build refuses
+every other Mac, so makedrive leaves it out and offers the general build. The
+catch is that a Mac which needs its own build can't be installed from your
+drive until Apple folds that build into the general release.
+
 Pick the installer you want and hit return. makedrive downloads it
 straight from Apple's servers with a progress bar, then processes it
-through the same pipeline as option 1: the result is verified, compressed,
-and scanned for restore before it lands in restorekit. Temporary download
-files are cleaned up automatically once the process finishes.
+through the same pipeline as option 1: the installer is verified and built
+into an image, which is placed in restorekit and then compressed and scanned
+for restore. Temporary download files are cleaned up automatically once the
+process finishes, and also if you stop makedrive partway through.
+
+The download also leaves a full installer app in `/Applications` along the
+way (the same kind of app you'd get from the App Store), and those run
+several gigabytes. Once the add has finished, makedrive shows where that
+app is and asks whether to delete it:
+
+```
+Delete it to free up disk space? Y/N:
+```
+
+Answer Y to remove it, or anything else to keep it. The image in
+restorekit doesn't need the app, and building drives never reads it, so
+keep it only if you want the installer app itself. If the add didn't
+finish, keeping the app lets you try again through option 1 without
+downloading a second time, since option 2 always fetches a fresh copy.
+Anything typed while the download and build were running is discarded
+before the question appears, so a stray Return can't answer it for you.
 
 10.9 Mavericks is the one exception. Apple no longer hosts it anywhere, so
 it isn't available through option 2 at all. If you need 10.9, add it
@@ -352,14 +464,21 @@ displays both in the boot picker and when the volume is mounted.
 Main Menu option 4 builds a drive. First choose a build type:
 
 ```
- 10. Apple Silicon & Intel Installers
- 11. Older PPC & Intel 10.3-10.11 Installers
- 12. DataDrive Only
+ 1. Apple Silicon & Intel Installers
+ 2. Older PPC & Intel 10.3-10.11 Installers
+ 3. DataDrive Only
+ 4. Intel ASD & AXD EFI Diagnostics
+ 5. Intel ASD OS Diagnostics
+  R. Return to disk build menu
   X. Return to the main menu
 ```
 
 Build types and the volumes they contain are defined in makedrive.conf, so
 the exact list reflects your configuration.
+
+Before it asks for a disk, makedrive confirms that every image the chosen
+build type needs is already in restorekit. If any are missing it lists
+them and returns to the build type list without touching a drive.
 
 After choosing a build type you're asked whether the contents of restorekit
 should also be copied to a **DataDrive** volume on the target. A populated
@@ -380,11 +499,56 @@ Intel Macs the boot disk is identified with `bless`; on Apple Silicon the
 boot volume is protected at the system level and makedrive recognizes it as
 well.
 
-Once a valid disk number is entered, no further input is needed until
-imaging finishes. `asr` decompresses and restores the images, and this is
+It won't erase a Time Machine backup disk either. makedrive names the
+backup disks it finds under the disk list and refuses any you pick. It only
+ever reads to find them, and it checks again just before formatting, in case
+a different disk was plugged in under the same number. If a backup is
+mounted but makedrive can't tell which disk it is on, it says so under the
+list, and then the disk you pick is up to you. An older backup disk that
+isn't mounted leaves no trace to find, so unplug disks you don't want near
+a build.
+
+Once you pick a disk, makedrive shows it and asks you to confirm the erase
+(Y to continue, N to choose again). After that, no further input is needed
+until imaging finishes. `asr` decompresses and restores the images, and this is
 CPU-intensive and I/O-intensive, so the host may be sluggish for other work
 in the meantime. When the build completes, makedrive asks whether you'd
 like to image another disk.
+
+---
+
+## Diagnostic Drives
+
+makedrive can build dedicated diagnostics drives carrying Apple Service
+Diagnostics (ASD), Apple Server Diagnostics (AXD), and the AST Blank Board
+Serializer for Intel Macs through the 2015 model years. Apple discontinued
+these tools long ago and no longer distributes them, so makedrive expects
+you to supply the disk images from your own archive. Add them through Main
+Menu option 1 under **Diagnostics**; each one is verified by volume name
+(and the AXD images by the build inside them, since 3X106 and 3X107 share a
+volume name), then compressed and scanned for restore.
+
+Every ASD version is a pair of images: an EFI volume holding the
+firmware-level diagnostic and an OS volume holding the full macOS-based
+test suite. Together they would be more than forty volumes on one disk,
+so there are two build types. **Intel ASD & AXD EFI Diagnostics** lays
+down every ASD EFI volume, the AXD server diagnostics, and the serializer,
+about 6 GB plus the DataDrive. **Intel ASD OS Diagnostics** lays down
+every ASD OS volume, about 210 GB plus the DataDrive. Build one drive of
+each for the full set. Both use an Apple Partition Map disk: every Intel
+Mac these tools support boots APM media, and `asr` has historically been
+unreliable restoring diagnostic sets onto GUID disks with this many
+volumes. The build expects each image in the list to be present in
+restorekit, and the add image menu shows what still needs to be added.
+
+Most diagnostic volumes restore with `asr` just like installers. The AXD
+3X104 through 3X109 volumes are different: Apple shipped those as
+installer packages, so makedrive runs the package from the source image
+against the target volume, telling the installer to accept it whatever its
+signing. Only the 3X109 package is signed, and its certificate expired
+years ago and was never renewed; the older ones aren't signed at all. The
+Blank Board Serializer can't be restored with `asr` at all, so its
+contents are cloned onto the target volume instead.
 
 ---
 
@@ -400,10 +564,20 @@ This is the fastest way to hand someone a bootable installer for a specific
 macOS version, or to quickly re-purpose a small drive without going through
 a full build.
 
-All configured image types appear in the chooser: both **GENERIC**
-(createinstallmedia-based) and **INST-A** (pre-built or legacy) images. The
-same boot-disk protection applies, so makedrive won't let you erase the
-disk you're currently running from.
+Every configured macOS installer appears in the chooser: both **GENERIC**
+(createinstallmedia-based) and **INST-A** (pre-built or legacy) images. An
+asterisk in front of a number means that installer isn't in restorekit yet;
+choosing it tells you the image can't be found and takes you back to the
+list. Diagnostic images don't appear here, since ASD only boots usefully as an
+EFI and OS pair; use the diagnostics build types to put those on a drive.
+The same boot-disk protection applies, so makedrive won't let you erase
+the disk you're currently running from.
+
+Media is partitioned to match the age of the installer. Images for Mac OS
+X 10.5 Leopard and earlier are restored onto Apple Partition Map media,
+which PowerPC Macs require and which the early Intel Macs of that era boot
+properly, so one drive covers both. Everything from 10.6 Snow Leopard
+onward uses the modern GUID scheme.
 
 When imaging is complete, makedrive ejects the disk and asks whether you'd
 like to restore another.
@@ -485,42 +659,57 @@ makedrive's tools require root on the host, but because makedrive is an
 open shell script, its behavior can be readily audited against your
 security policy.
 
-makedrive makes network connections in four situations, all of which can be
+makedrive makes network connections in six situations, all of which can be
 avoided if you prefer an offline workflow:
 
 1. **Version checking.** At launch makedrive fetches Apple's software-update
-   catalog to compare installer build numbers. The catalog URLs are defined
-   in makedrive.conf. A network failure here isn't fatal: makedrive simply
-   leaves the configuration unchanged and continues.
-2. **PIL (Pillow) installation.** On first launch makedrive checks whether
+   catalog to compare installer build numbers. The result is kept for two
+   hours, so launches close together reuse it and skip the network entirely.
+   The catalog URLs are defined in makedrive.conf. A network failure here
+   isn't fatal: makedrive simply leaves the configuration unchanged and
+   continues.
+2. **Installer downloads.** Only when you choose Main Menu option 2, which
+fetches the software-update catalog again to list what's available and
+then downloads the installer you pick directly from Apple's servers.
+3. **Installer assets.** While it builds a macOS 10.14 or later installer
+image, `createinstallmedia` downloads a few extra assets from Apple, which
+is Apple's own tool doing it. Adding a ready-made DMG to restorekit instead
+involves no download.
+4. **PIL (Pillow) installation.** On first launch makedrive checks whether
    the Pillow Python imaging library is installed. If it isn't, makedrive
-   installs it automatically via `pip` from the Python Package Index
-   (PyPI). Pillow is used to normalize volume icon formats for
-   compatibility with pre-2013 EFI boot pickers. After the initial
-   installation it isn't re-downloaded. If installation fails, for example
-   in an offline or pip-restricted environment, makedrive continues
-   normally. Icons are still applied to volumes, but they may not appear in
-   the boot picker on older hardware.
-3. **Xcode Command Line Tools installation.** If the Xcode Command Line
+   explains what it's for and asks before installing it via `pip` from the
+   Python Package Index (PyPI). Pillow is used to normalize volume icon
+   formats for compatibility with pre-2013 EFI boot pickers. If you
+   decline, makedrive remembers your answer and won't ask again; the prompt
+   explains how to be asked again later. Declining or a failed installation
+   changes nothing else: icons are still applied to volumes, but they may
+   not appear in the boot picker on older hardware.
+5. **Xcode Command Line Tools installation.** If the Xcode Command Line
    Tools aren't present, makedrive offers to install them. Typing `I` to
    confirm hands off to Apple's own installer dialog
    (`xcode-select --install`), which downloads the tools from Apple's
    servers. makedrive then exits so installation can complete before the
    next run.
-4. **Pushover notifications.** Only if you configure them (Main Menu
+6. **Pushover notifications.** Only if you configure them (Main Menu
    option 6), and only to send the notification you requested.
 
 makedrive.conf is the configuration that drives partitioning and
 deployment. It's controlled by the administrator who runs makedrive, and
-it's the intended trust boundary. Pushover credentials are stored in your
-login keychain rather than in any file on disk.
+it's the intended trust boundary. Be aware of what that means: the file is
+kept writable by your user account so it can be edited without elevation,
+and everything in it runs with root privileges the next time makedrive
+starts. Anything on the Mac that can modify makedrive.conf can therefore
+act as root through makedrive, so treat write access to that file the same
+way you treat administrator access to the machine itself. Pushover
+credentials are stored in your login keychain rather than in any file on
+disk.
 
-### Installer binary re-signing (10.10 through 10.15)
+### Installer binary re-signing (10.9 through 10.15)
 
 Apple's kernel maintains a trust cache, a per-release list of known
 Apple-shipped binaries. When a binary carries Apple's "platform"
 code-signing marker, the kernel validates its cryptographic hash against
-this list before allowing it to run. Installer binaries from 10.10 through
+this list before allowing it to run. Installer binaries from 10.9 through
 10.15 carry that marker, but their hashes are absent from the trust caches
 of current host systems, which only include binaries shipped with recent
 OS releases. The result is that the kernel terminates them immediately on
@@ -546,7 +735,7 @@ A few important boundaries on what this process does and doesn't affect:
   content that `createinstallmedia` copies onto the bootable installer
   volume (the operating system files, frameworks, and kernel) comes
   directly from Apple's original sources and is never modified.
-- **Re-signing is limited to 10.10 through 10.15.** Installers for macOS 11
+- **Re-signing is limited to 10.9 through 10.15.** Installers for macOS 11
   and later are currently present in the trust caches of modern host
   systems and run without re-signing. Re-signing them would additionally
   risk breaking the resulting bootable installer on Apple Silicon
@@ -599,88 +788,10 @@ longer build those images at all.
 
 ---
 
-## Changelog
+## Release History
 
-Full release history is in [RELEASE_HISTORY.md](RELEASE_HISTORY.md).
-
-### Build 202 - 2026-07-01
-
-- **Configuration derivation:** addMenuOrder, buildTypeNums, and build type
-  size estimates are now derived automatically from makedrive.conf's image
-  and build-type blocks.
-- **Build type renumbering:** build types are now numbered 1, 2, and 3
-  (previously 10, 11, and 12, a leftover from a subsystem removed in Build
-  200).
-- **macOS 10.15 Catalina boot panic fix:** makedrive was incorrectly
-  filtering out BaseSystem.chunklist and AppleDiagnostics.chunklist files,
-  which the xnu kernel requires for root-dmg authentication at boot. Their
-  absence caused immediate boot panics. These files are now correctly included
-  in SharedSupport and confirmed working on real hardware.
-- **Documentation corrections:** makedrive.conf's location (per-user
-  Application Support, not system-wide) and Pushover credential storage (the
-  login keychain, not the System Keychain) are now described correctly.
-
-### Build 201 - 2026-06-30
-
-- **EFI volume icons now present correctly in old and new style EFI.**
-- **Disk labels now present consistently across all OS versions.**
-- **datefix pre-flight script:** makedrive now places a `datefix` shell
-  script at the root of every deployed 10.7, 10.8, and 10.9 install
-  volume. Running it from the installer's Terminal disables Wi-Fi (so the
-  clock can't be corrected by a time server) and sets the clock back to a
-  date within the validity window of the installer's signing certificates,
-  which have expired and won't be re-issued by Apple.
-- **Legacy installer re-signing (10.10 through 10.15):**
-  createinstallmedia was being killed on launch (or aborting during
-  framework load) on macOS 26 Golden Gate and later. Newer systems
-  validate Apple "platform" binaries against a per-OS trust cache that old
-  installers aren't in. makedrive now ad-hoc re-signs every executable in
-  the installer bundle before running createinstallmedia, replacing the
-  platform claim with a locally trusted signature. Catalina additionally
-  required clearing Finder-info metadata that blocked signing. Confirmed
-  building on Golden Gate for 10.13 through 11.
-- **Source 10.7 through current installers from Apple directly**
-- **Sierra version-mismatch fix:** Apple shipped a Sierra installer whose
-  recorded version disagrees with what its createinstallmedia expects,
-  which caused it to spawn endlessly. makedrive now corrects the version
-  before running so creation completes.
-- **Progress messaging for silent steps:** steps that hand off to a long
-  external process with no output (installer verification, re-signing,
-  and icon merging) now print a status line so the terminal no longer
-  appears to hang.
-- **Quieter keychain migration:** Pushover credential migration and
-  removal no longer leak raw `security` command dumps into the terminal.
-- **conf archive:** makedrive.conf migrations now archive the previous
-  conf with a timestamp in a "conf archive" subfolder of Application
-  Support, keeping the 10 most recent copies as a safety net against
-  unintended changes.
-- **Restore to USB or SD card:** new Main Menu option 4 restores a single
-  installer image to a USB drive, SD card, or other small media. The full
-  disk is used for the install volume, and DataDrive isn't copied.
-
-### Build 200 - 2026-06-27 (first public release)
-
-- Refocused makedrive as a macOS install and restore drive builder. The
-  legacy diagnostic and triage subsystem (ASD/AXD downloads, diagnostic
-  and triage build menus, icon-zip import) has been removed.
-- Configuration externalized to **makedrive.conf**, stored in
-  `/Library/Application Support/makedrive/`, with automatic migration of a
-  conf placed next to the script.
-- Added **Pushover** notifications (replacing the retired Boxcar service),
-  with credentials stored in the System Keychain.
-- Added **automatic version checking** against Apple's software-update
-  catalog, keeping installer build numbers current in makedrive.conf.
-- Added an **Uninstall** option to the Main Menu.
-- Added installer **build-number verification** before adding to
-  restorekit.
-- Volume icons are now extracted automatically from the installer app
-  bundle, including the differently located icon used by 10.3 through
-  10.6 installers.
-- Boot-disk protection now covers **Apple Silicon** in addition to Intel.
-- Installer coverage spans **10.3 Panther through the current macOS
-  release.**
-
-*For the complete release history going back to 2011, see [RELEASE_HISTORY.md](RELEASE_HISTORY.md).*
+The complete release history, from the current build back to makedrive's
+origins in 2011, lives in [RELEASE_HISTORY.md](RELEASE_HISTORY.md).
 
 ---
 

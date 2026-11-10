@@ -5,6 +5,176 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 
+### Build 203 - 2026-11-10
+
+- **Diagnostic drive support returns:** Apple Service Diagnostics, Apple
+  Server Diagnostics (AXD), and the AST Blank Board Serializer are back as
+  images defined in makedrive.conf, with two Apple Partition Map build
+  types for Intel Macs through the 2015 model years: one for the EFI
+  volumes and one for the ASD OS volumes. makedrive installs the AXD
+  packages whatever their signing: 3X109's certificate expired long ago,
+  and the older packages aren't signed at all. USB and SD card restores
+  stay installer only.
+- **AXD images are told apart by build:** AXD 3X106 and 3X107 share a
+  volume name, so the name alone can't tell their images apart. Each AXD
+  entry in makedrive.conf now names the build its image says it is, and
+  adding the wrong image is refused, naming the build it reported.
+- **Version sync preserves conf ownership:** an automatic version update
+  could leave makedrive.conf owned by root and unreadable, so the next
+  launch failed with misleading missing-variable errors. The conf now keeps
+  its ownership and permissions, and a launch that finds an unreadable conf
+  goes straight to the administrator prompt and repairs it.
+- **Mavericks package assembly:** a 10.9 installer flat package in Apple's
+  layout is now accepted through the same package assembly, version check,
+  and build verification as 10.10 through 10.12 when the installer app is
+  not in /Applications. Apple never published such a package, so the
+  download menu still excludes 10.9; this covers archival copies.
+- **macOS 27 Golden Gate support added:** now downloadable and addable
+  from Apple's catalog like any other current release, and included in
+  the Apple Silicon & Intel Installers build type. Configured Apple
+  Silicon only, matching Apple's Rosetta 2 phase-out schedule.
+- **Current as of release day:** makedrive.conf is up to date as of November
+  10, with macOS 27.2.1, 26.7.3, and 15.8.3. The launch check keeps your own
+  copy current from there.
+- **Mounted-source deploys hardened:** the AXD package install and the
+  serializer clone now confirm the source image really mounted, and always
+  detach it afterwards. An image that attaches without mounting gives a
+  clean error instead of acting on an empty path.
+- **Add image menu reorganized:** Main Menu option 1 now opens a chooser
+  for macOS installers or diagnostic images. Lists with missing images are
+  marked with a count, and each list puts an asterisk beside its missing
+  images. The Main Menu shows a short notice instead of the full list,
+  counting what is missing of each kind and leaving diagnostics out until
+  you've added one, since they are optional. It doesn't tell you which
+  option to use: the download list (option 2) and the quick restore list
+  (option 5) mark missing installers the same way as the add lists, so every
+  list you add an image from shows what is missing.
+- **The Main Menu notice can leave a kind out for good:** the new setting
+  `missingNoticeIgnoredKinds` in makedrive.conf names the kinds of image
+  (Installers, Diagnostics) the notice never mentions, for someone who keeps
+  only a few diagnostic images or has no use for the installers. A name that
+  isn't a kind is refused at launch.
+- **Every screen fits an 80 column Terminal window:** the quick restore list
+  uses the add lists' shorter names, the notice about newer releases breaks
+  between releases instead of wrapping inside a name, and the longer messages
+  in the add, build, download and launch checks are broken into lines that fit. A
+  test now measures each screen, and the longest line every message can
+  print.
+- **Main Menu option 4 renamed:** it now reads "Build your drive" instead
+  of "Build your install drive", because the drives it builds can hold
+  diagnostics or just a DataDrive as well as installers. The Pushover
+  message when a build finishes says "Your drive" for the same reason.
+- **Control-C cancels downloads:** pressing Control-C during an installer
+  download now cancels just that transfer and returns to the menu instead
+  of exiting makedrive.
+- **Installer apps are no longer removed silently:** after an add finishes,
+  makedrive shows where the installer app it downloaded (option 2) or
+  assembled from your package (option 1) is in /Applications and asks
+  whether to delete it. Anything typed during the download and build is
+  discarded first, so a stray Return can't answer for you.
+- **Download menu stays in step with Apple:** it now brings makedrive.conf
+  up to Apple's live catalog before listing installers, re-issued builds
+  included, so each download is labeled with and verified against the build
+  Apple is serving. If the conf can't be updated, makedrive says so before
+  downloading, not after.
+- **Builds made for only a few Macs are skipped:** Apple sometimes posts an
+  extra build of a release for a handful of new Mac models, with a higher
+  build number, and that build refuses every other Mac (macOS 27.2 and
+  27.2.1 each have two of them). The version check and the download menu now
+  pass those over and stay with the general build. A Mac that needs its own
+  build can't be installed from your drive until Apple folds it into the
+  general release.
+- **Download links live in makedrive.conf:** the fixed Apple links behind the
+  10.7 through 10.12 downloads moved from the script into each installer's
+  block in makedrive.conf, so a link Apple moves is a conf edit. A conf from
+  before this still offers them, and a link set wrongly is refused at launch
+  instead of after the download.
+- **More of the conf is checked at launch:** a partition too small for its
+  installer image, which failed the restore after the whole image had been
+  built, and a build type that lists volumes after dataDrive, which were
+  silently left off the drive, are now refused with a message naming the entry.
+- **Missing images stop a build before the disk is erased:** a full drive
+  build now checks that every image its build type needs is in restorekit
+  before you choose a target disk.
+- **Compress and scan failures are reported:** adding an image no longer
+  announces success when compression or the restore scan failed. It names
+  the step that didn't finish and points to Main Menu option 3. A staging
+  file left by an interrupted compression also no longer blocks every
+  later attempt on that image.
+- **Version sync follow-through:** a sync that can't replace the conf no
+  longer reports an update or leaves a staging file behind, and Compress
+  and scan picks up renamed images in the same session instead of after a
+  relaunch.
+- **Menu input hardening:** entries with a leading zero (08, 010) are read
+  as plain decimal numbers instead of exiting makedrive or selecting the
+  wrong item, the build type menu's R option no longer continues into disk
+  selection with no type chosen, and a menu whose input has ended exits
+  instead of redrawing indefinitely.
+- **Bigger installer images for macOS 26 and 27:** a finished macOS 26
+  image came out 97% full, so the working image for 26 and 27 grows from 20
+  to 21 GB and the drive partitions from 22 to 23 GB. A full Apple Silicon
+  and Intel drive now needs about 260 GB (it was 250).
+- **Interrupted runs clean up after themselves:** installer downloads, the
+  working image, and the version check files now share one scratch folder
+  that cleanup always removes, so an interrupted download no longer leaves
+  several gigabytes behind. Closing the Terminal window runs the same
+  cleanup as Control-C (it used to end makedrive on the spot and leave the
+  lock file and scratch folder behind), and temp volumes left mounted by an
+  interrupted build are detached. A failed volume rename during
+  createinstallmedia stops with a clear message instead of cascading.
+- **Time Machine backup disks are never erased:** makedrive now names the
+  backup disks under the disk list, refuses to erase one, checks again
+  right before formatting, and won't eject one afterwards. It finds them
+  read-only through `tmutil`, the APFS Backup volume role, or an older
+  backup's `Backups.backupdb` folder. Disk numbers must be digits now, so a
+  slice like `6s2` can't slip past.
+- **Configuration checked at launch:** makedrive.conf is now validated
+  before any menu is offered. A missing variable, an unrecognized deploy
+  type or AddFunc, or whitespace in a partition field is reported as an
+  error at launch instead of surfacing after a target disk has already
+  been erased.
+- **Faster startup:** the launch version check reuses its catalog result
+  for two hours, so closely spaced launches skip the network and start
+  instantly. When a fetch does run, the minimum wait dropped from six
+  seconds to four.
+- **USB and SD restores of 10.5 and earlier now use Apple Partition Map,**
+  so the media boots PowerPC Macs (which require APM) as well as the early
+  Intel Macs those releases support. 10.6 and later continue to use the
+  GUID scheme.
+- **Image validation follows the real mount point:** adding an image now
+  verifies the volume makedrive actually mounted, so an unrelated volume
+  that shares the same name can no longer cause the right image to be
+  rejected or vouch for a wrong one.
+- **Security hardening:** scratch files now live in a root-owned directory
+  with an unpredictable name, and Pushover credentials stay out of process
+  listings. Apple catalog values and the cached version check are validated
+  before use, downloads are checked against their expected sizes, and
+  Pillow installation asks first instead of running silently at launch.
+- **Elevation and instance-check fixes:** a failed administrator
+  authentication can no longer continue unprivileged, and the duplicate
+  instance check now also works when makedrive is launched directly with
+  sudo.
+- **Volume UUIDs preserved:** the Finder metadata patch applied during
+  icon work now clears only the intended fields instead of zeroing the
+  volume UUID as well.
+- **Leaner icon application:** applying a volume icon now rewrites the
+  image twice instead of three times and mounts it once instead of twice,
+  saving time and disk activity on large images. On merge failure the
+  original image is left untouched.
+- **Internal consolidation:** the two embedded catalog fetchers became
+  one, and duplicated re-signing, image-attach, cleanup, compress/scan,
+  and restore rename logic was unified, removing several hundred lines
+  with no behavior change.
+- **makedrive.conf reorganized:** the sections edited routinely (build
+  types, then installer image definitions, newest first) now lead the
+  file, with the frozen diagnostic definitions and the static datefix
+  script at the end. Section order has no effect on behavior.
+- **Documentation:** the user guide's changelog now lives entirely in
+  RELEASE_HISTORY.md, the makedrive.conf trust boundary is stated
+  explicitly under Security Considerations, and stale descriptions
+  (Pillow installation, build type numbering) were corrected.
+- Happy 251st birthday to the United States Marine Corps. Semper Fi.
+
 ### Build 202 - 2026-07-01
 
 - **Configuration derivation:** addMenuOrder, buildTypeNums, and build type
