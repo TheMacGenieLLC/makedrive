@@ -33,6 +33,9 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   from Apple's catalog like any other current release, and included in
   the Apple Silicon & Intel Installers build type. Configured Apple
   Silicon only, matching Apple's Rosetta 2 phase-out schedule.
+- **Current as of release day:** makedrive.conf is up to date as of November
+  10, with macOS 27.2.1, 26.7.3, and 15.8.3. The launch check keeps your own
+  copy current from there.
 - **Mounted-source deploys hardened:** the AXD package install and the
   serializer clone now confirm the source image really mounted, and always
   detach it afterwards. An image that attaches without mounting gives a
@@ -75,10 +78,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   downloading, not after.
 - **Builds made for only a few Macs are skipped:** Apple sometimes posts an
   extra build of a release for a handful of new Mac models, with a higher
-  build number, and that build refuses every other Mac (macOS 27.2 has two
-  of them). The version check and the download menu now pass those over and
-  stay with the general build. A Mac that needs its own build can't be
-  installed from your drive until Apple folds it into the general release.
+  build number, and that build refuses every other Mac (macOS 27.2 and
+  27.2.1 each have two of them). The version check and the download menu now
+  pass those over and stay with the general build. A Mac that needs its own
+  build can't be installed from your drive until Apple folds it into the
+  general release.
 - **Download links live in makedrive.conf:** the fixed Apple links behind the
   10.7 through 10.12 downloads moved from the script into each installer's
   block in makedrive.conf, so a link Apple moves is a conf edit. A conf from
@@ -168,6 +172,7 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   RELEASE_HISTORY.md, the makedrive.conf trust boundary is stated
   explicitly under Security Considerations, and stale descriptions
   (Pillow installation, build type numbering) were corrected.
+- Happy 251st birthday to the United States Marine Corps. Semper Fi.
 
 ### Build 202 - 2026-07-01
 
