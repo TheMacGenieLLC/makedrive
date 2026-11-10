@@ -62,7 +62,8 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   print.
 - **Main Menu option 4 renamed:** it now reads "Build your drive" instead
   of "Build your install drive", because the drives it builds can hold
-  diagnostics or just a DataDrive as well as installers.
+  diagnostics or just a DataDrive as well as installers. The Pushover
+  message when a build finishes says "Your drive" for the same reason.
 - **Control-C cancels downloads:** pressing Control-C during an installer
   download now cancels just that transfer and returns to the menu instead
   of exiting makedrive.

@@ -3643,7 +3643,8 @@ build_drives_start () {
 		build_eject_target_disk "$diskNum"
 
 		if [ "$buildTaskResult" = "0" ]; then
-			notify_pushover_send "Your installation drive has finished imaging."
+			# "Your drive", not "installation drive": this builds diagnostics and DataDrive drives too
+			notify_pushover_send "Your drive has finished imaging."
 		else
 			notify_pushover_send "An error was encountered during imaging: ${lastBuildError}"
 		fi
