@@ -109,9 +109,11 @@ restorekit, a short notice appears above the Main Menu, saying how many are
 missing of each kind (macOS installers, diagnostic images). Diagnostics are
 optional, so the notice leaves them out until you've added at least one,
 and a setting in [makedrive.conf](#makedriveconf) can leave a kind out for
-good. The add image menu (Main Menu option 1) marks each image list that has
-missing files, and choosing a list puts an asterisk beside each image that
-is missing; add them and the notice clears.
+good. The notice doesn't say which option to choose, because every list you
+add an image from (Main Menu options 1 and 2), and the list for restoring to a
+USB or SD card (option 5), puts an asterisk in front of each image that is
+missing. The add image menu (option 1) also tags each kind that has some
+missing; add them and the notice clears.
 
 If restorekit isn't found next to the script, makedrive offers to create an
 empty one so you can start from scratch and add images from within the
@@ -382,9 +384,11 @@ Choose a macOS installer to download and add to restorekit:
 
   10.9 Mavericks is not available from Apple - add it manually via option 1.
 
-  1. 27.x App Store Install                        16.6 GB
+* 1. 27.x App Store Install                        16.6 GB
   2. 26.x App Store Install                        17.1 GB
   ...
+
+* Not present in restorekit
 
   X. Return to Main Menu
 
@@ -393,6 +397,10 @@ Enter a number to download and add, or X to return:
 
 (The exact list, order, and sizes reflect what's currently available from
 Apple and the macOS versions defined in makedrive.conf.)
+
+An asterisk in front of a number means that installer isn't in restorekit yet,
+so what is left to download is easy to see. It goes away as soon as the
+download has finished.
 
 Before it lists anything, makedrive brings makedrive.conf up to date with
 that catalog, so every entry is labeled with the release Apple is offering
@@ -561,7 +569,7 @@ Every configured macOS installer appears in the chooser: both **GENERIC**
 asterisk in front of a number means that installer isn't in restorekit yet;
 choosing it tells you the image can't be found and takes you back to the
 list. Diagnostic images don't appear here, since ASD only boots usefully as an
-EFI and OS pair; use the diagnostics build type to put those on a drive.
+EFI and OS pair; use the diagnostics build types to put those on a drive.
 The same boot-disk protection applies, so makedrive won't let you erase
 the disk you're currently running from.
 

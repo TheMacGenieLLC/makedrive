@@ -388,6 +388,9 @@ add_copy_single_dmg () {
 
 	local testDevice testMountPoint mpBase grepReturn buildNote foundBuild dmgBaseDir _pkgExtractedApp=""
 	local copyResult=1
+	# The name goes into several messages. A variable of its own tells the
+	# 80 column test (t_screen_width) how wide it can get.
+	local displayName="$1"
 
 	disp_print_header
 
@@ -395,7 +398,7 @@ add_copy_single_dmg () {
 	# one. If $5 points to an existing file, use it directly.
 	if [ "$5" = "" ]; then
 
-		echo "Drag the DMG for $1 into "
+		echo "Drag the DMG for $displayName into "
 		echo "the terminal window and hit return to add the image into restorekit."
 		echo ""
 		read -r imagePathToAdd
@@ -465,9 +468,9 @@ add_copy_single_dmg () {
 			if [ "$foundBuild" = "$4" ]; then
 				grepReturn=0
 			elif [ -n "$foundBuild" ]; then
-				buildNote="It says it is build $foundBuild, and $1 is build $4."
+				buildNote="It says it is build $foundBuild, and $displayName is build $4."
 			else
-				buildNote="It does not say which build it is, and $1 is build $4."
+				buildNote="It does not say which build it is, and $displayName is build $4."
 			fi
 		else
 			grepReturn=0
@@ -482,7 +485,7 @@ add_copy_single_dmg () {
 		
 		disp_print_header
 		
-		echo "$1 appears valid and is"
+		echo "$displayName appears valid and is"
 		echo "copying to restorekit now."
 		echo ""
 		
@@ -587,14 +590,14 @@ with open(sys.argv[1], 'r+b') as f:
 
 			if dmgtool_prepare_dmg "$2" "$1"; then
 				disp_print_header
-				echo "$1 was successfully copied into restorekit."
+				echo "$displayName was successfully copied into restorekit."
 				copyResult=0
 			fi
 
 		else
 			
 			echo ""
-			echo "$1 was NOT successfully copied into restorekit."
+			echo "$displayName was NOT copied into restorekit."
 			echo "Check the image source and destination, then try again."
 		
 		fi
@@ -604,7 +607,7 @@ with open(sys.argv[1], 'r+b') as f:
 	
 		disp_print_header
 		
-		echo "The image does not appear to match $1."
+		echo "The image does not appear to match $displayName."
 		[ -n "$buildNote" ] && echo "$buildNote"
 		echo "It may be the wrong image, it may have been modified since it was downloaded,"
 		echo "or it may not be titled the way makedrive expects. Verify your image and try"
@@ -2105,8 +2108,11 @@ MAKEDRIVE_CATALOG_PYEOF
 # Versions 10.13 and newer come from Apple's software-update catalog (fetched
 # on demand). Versions 10.7-10.12 (except 10.9, which has no Apple-hosted
 # source) come from the fixed Apple links makedrive.conf gives those installers
-# (DownloadURL and DownloadBytes). After the user selects a version the download
-# and processing are handled by download_fetch_and_process.
+# (DownloadURL and DownloadBytes). A row for an installer that isn't in restorekit
+# yet has an asterisk in front of its number (see disp_image_mark), worked out
+# each time the list is drawn, so a download clears its own. After the user
+# selects a version the download and processing are handled by
+# download_fetch_and_process.
 # ------------------------------------------------------------------------------
 download_installer_menu () {
 
@@ -2193,7 +2199,7 @@ download_installer_menu () {
 	done
 
 	local totalCount=${#dlKeys[@]}
-	local dlChoice selIdx _gb _confBuildVar
+	local dlChoice selIdx _gb _confBuildVar _mark _anyMissing
 
 	while true; do
 
@@ -2204,12 +2210,20 @@ download_installer_menu () {
 		echo "  10.9 Mavericks is not available from Apple - add it manually via option 1."
 		echo ""
 
+		_anyMissing=0
 		for (( i = 0; i < totalCount; i++ )); do
 			_gb=$(awk -v b="${dlBytes[$i]}" 'BEGIN {printf "%.1f GB", b/1024/1024/1024}')
-			printf " %2d. %-45s %s\n" $(( i + 1 )) "${dlLabels[$i]}" "$_gb"
+			_mark="$(disp_image_mark "${dlKeys[$i]}")"
+			if [ "$_mark" = "*" ]; then
+				_anyMissing=1
+			fi
+			printf "%s%2d. %-45s %s\n" "$_mark" $(( i + 1 )) "${dlLabels[$i]}" "$_gb"
 		done
 
 		echo ""
+		if [ "$_anyMissing" -eq 1 ]; then
+			disp_print_mark_legend
+		fi
 		echo "  X. Return to Main Menu"
 		echo ""
 		echo "Enter a number to download and add, or X to return:"
@@ -4081,13 +4095,15 @@ check_file_presence () {
 # ------------------------------------------------------------------------------
 # disp_print_missing_notice
 # Prints the box above the Main Menu that says images are missing from restorekit,
-# in five lines however many kinds are missing (the Main Menu is already 23 lines
-# tall, so every line here pushes its top off a small Terminal): one line saying
-# how many of each kind of image (see image_category_facts), and one saying where
-# to go. The kinds are told apart because they aren't equally wanted: every drive
-# is built from macOS installers, but the others are extras, and for an extra the
-# notice says nothing until its first image has been added, since someone who has
-# none of them hasn't chosen to use them. The conf can also switch a kind off for
+# in four lines however many kinds are missing (the Main Menu is already 23 lines
+# tall, so every line here pushes its top off a small Terminal): a single line
+# saying how many of each kind of image (see image_category_facts). It doesn't
+# tell the person which option to choose, because every list an image is added
+# from (options 1 and 2) marks the ones that are missing. The kinds are told
+# apart because they aren't equally wanted: every drive is built from macOS
+# installers, but the others are extras, and for an extra the notice says
+# nothing until its first image has been added, since someone who has none of
+# them hasn't chosen to use them. The conf can also switch a kind off for
 # good (missingNoticeIgnoredKinds), for someone who keeps only a few diagnostic
 # images, say, or whose Mac builds only diagnostics drives. Prints nothing when no
 # kind is left to name.
@@ -4131,7 +4147,6 @@ disp_print_missing_notice () {
 
 	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 	echo "Missing from restorekit: ${noticeSummary}."
-	echo "Choose option 1 to see what's missing and add images."
 	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 	echo ""
 
@@ -4430,6 +4445,40 @@ disp_print_two_column_list () {
 
 
 # ------------------------------------------------------------------------------
+# disp_image_mark
+# Prints the one character that goes in front of an image's number in a list: an
+# asterisk if the image isn't in restorekit, a space if it is, so that the
+# numbers line up either way. Every list of images marks them like this (the add
+# lists, option 5 and the download list), and says what the asterisk means with
+# disp_print_mark_legend.
+#
+# $1 - The image's conf key
+# ------------------------------------------------------------------------------
+disp_image_mark () {
+
+	if check_image_present "$1"; then
+		printf ' '
+	else
+		printf '*'
+	fi
+
+}
+
+
+# ------------------------------------------------------------------------------
+# disp_print_mark_legend
+# Prints the line under a list of images that says what the asterisk means, and
+# a blank line after it. Only for a list that has an asterisk in it.
+# ------------------------------------------------------------------------------
+disp_print_mark_legend () {
+
+	echo "* Not present in restorekit"
+	echo ""
+
+}
+
+
+# ------------------------------------------------------------------------------
 # disp_print_image_list
 # Prints a numbered list of images in two columns, with an asterisk in front of
 # the number of every image that isn't in restorekit (and a space in front of the
@@ -4441,7 +4490,8 @@ disp_print_two_column_list () {
 # $1 - Array variable holding the image keys to list, passed by name (e.g.
 #      myKeys[@]); the number shown is the key's place in it
 # $2 - Ending of the name of the conf variable that holds each key's label
-#      (MenuLabel for the add lists, DispName for the quick restore list)
+#      (MenuLabel, for the add lists and the quick restore list alike: the full
+#      DispName is too long for two columns in 80)
 # ------------------------------------------------------------------------------
 disp_print_image_list () {
 
@@ -4453,9 +4503,8 @@ disp_print_image_list () {
 	for (( listIdx = 0 ; listIdx < ${#listKeys[@]} ; listIdx++ )); do
 		listKey="${listKeys[$listIdx]}"
 		listLabelVar="${listKey}${listLabelEnding}"
-		listMark=" "
-		if ! check_image_present "$listKey"; then
-			listMark="*"
+		listMark="$(disp_image_mark "$listKey")"
+		if [ "$listMark" = "*" ]; then
 			listAnyMissing=1
 		fi
 		listLabels+=( "$(printf "%s%2d. %s" "$listMark" $(( listIdx + 1 )) "${!listLabelVar}")" )
@@ -4465,8 +4514,7 @@ disp_print_image_list () {
 
 	echo ""
 	if [ "$listAnyMissing" -eq 1 ]; then
-		echo "* Not present in restorekit"
-		echo ""
+		disp_print_mark_legend
 	fi
 
 }

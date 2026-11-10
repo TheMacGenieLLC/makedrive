@@ -41,9 +41,11 @@ For context on current features, see [USER_GUIDE.md](USER_GUIDE.md).
   for macOS installers or diagnostic images. Lists with missing images are
   marked with a count, and each list puts an asterisk beside its missing
   images. The Main Menu shows a short notice instead of the full list,
-  counting what is missing of each kind, and leaves diagnostics out until
-  you've added one, since they are optional. Main Menu option 5 marks
-  missing installers the same way.
+  counting what is missing of each kind and leaving diagnostics out until
+  you've added one, since they are optional. It doesn't tell you which
+  option to use: the download list (option 2) and the quick restore list
+  (option 5) mark missing installers the same way as the add lists, so every
+  list you add an image from shows what is missing.
 - **The Main Menu notice can leave a kind out for good:** the new setting
   `missingNoticeIgnoredKinds` in makedrive.conf names the kinds of image
   (Installers, Diagnostics) the notice never mentions, for someone who keeps
